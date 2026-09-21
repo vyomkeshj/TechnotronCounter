@@ -35,6 +35,11 @@ from edges.dataset import discover, frame_of, tight
 COVERAGE_TOL = 0.40          # relative deviation from the type's median that earns a warning
 
 
+def _type_of(stem: str) -> str:
+    from common import splits
+    return splits.type_of(stem) or "typeX"
+
+
 def coverage(png: str, js: str) -> float:
     """Labelled pixels / lit pixels on the tight crop -- the 'band vs thin line' number."""
     img = cv2.imread(png)
@@ -82,18 +87,29 @@ def ingest(folder: str, site: str, do_columns=True, do_edges=True) -> dict:
     # A stem is the identity of a frame across the whole pipeline (splits are keyed by it).
     # Re-adding one under a new folder would give it two entries and two split decisions.
     from columns.dataset import discover as _cdiscover
-    have_cols = {it["stem"] for it in _cdiscover()}
+    have_cols = {it["stem"]: it["json"] for it in _cdiscover()}
     have_edges = {it["stem"] for it in discover()[0]}
     frames_dir = os.path.join(folder, "frames")
+    combined = []                                  # frames that ALSO carry edge polygons
     if do_columns and os.path.isdir(frames_dir):
         dst = os.path.join(paths.COLUMNS_DATA, f"site_{site}")
         os.makedirs(dst, exist_ok=True)
         for js in sorted(glob.glob(os.path.join(frames_dir, "*.json"))):
             stem = os.path.splitext(os.path.basename(js))[0]
             if stem in have_cols:
-                print(f"[ingest] {stem}: already in data/columns, skipped (rename it if it is "
-                      f"genuinely a different frame)")
+                # IDEMPOTENT for the same site: a --dry-run (or an earlier attempt) has
+                # already copied this frame in. It is still THIS site's new frame, so it
+                # must still be boosted in training and excluded from the gate sets.
+                if os.path.normcase(os.path.dirname(os.path.abspath(have_cols[stem]))) == os.path.normcase(dst):
+                    added["columns"].append(stem)
+                    if labelme.has_edge_labels(js):
+                        combined.append((stem, js))
+                    continue
+                print(f"[ingest] {stem}: already in data/columns (another source), skipped "
+                      f"(rename it if it is genuinely a different frame)")
                 continue
+            if labelme.has_edge_labels(js):
+                combined.append((stem, js))
             img = next((p for e in (".jpg", ".png", ".jpeg")
                         if os.path.exists(p := os.path.join(frames_dir, stem + e))), None)
             if not img:
@@ -105,10 +121,33 @@ def ingest(folder: str, site: str, do_columns=True, do_edges=True) -> dict:
                     shutil.copy2(src, tgt)
             added["columns"].append(stem)
 
+    # COMBINED labelling: the frame json carries the edge polygons too. Derive the
+    # straightened crops AND their edge labels straight into data/edges (same geometry as
+    # the production straightener -- see edges/from_frames.py), then treat them exactly
+    # like labels that arrived beside crops.
+    new_pairs = []
+    if do_edges and combined:
+        from edges.from_frames import frame_to_crops
+        for stem, js in combined:
+            img = labelme.image_for(js)
+            typ = _type_of(stem)
+            out_dir = os.path.join(paths.EDGES_DATA, typ)
+            if glob.glob(os.path.join(out_dir, f"{stem}_column_*.png")):
+                n_png = len(glob.glob(os.path.join(out_dir, f"{stem}_column_*.png")))
+                n_json = len(glob.glob(os.path.join(out_dir, f"{stem}_column_*.json")))
+                print(f"[ingest] {stem}: edge crops already derived ({n_png} crops, {n_json} labelled) -- reusing")
+            else:
+                n_png, n_json = frame_to_crops(img, js, out_dir, stem)
+            for jp in sorted(glob.glob(os.path.join(out_dir, f"{stem}_column_*.json"))):
+                cstem = os.path.splitext(os.path.basename(jp))[0]
+                new_pairs.append((typ, jp[:-5] + ".png", jp))
+                added["edges"].append(cstem)
+                added["stems"].append(cstem)
+            print(f"[ingest] {stem}: combined frame -> {n_png} crops, {n_json} with edge labels -> data/edges/{typ}")
+
     # labels arrive either in edges/ (already had crops) or in edges_to_label/ (stage 2 wrote them)
     edge_dirs = [d for d in (os.path.join(folder, "edges"), os.path.join(folder, "edges_to_label"))
                  if os.path.isdir(d)]
-    new_pairs = []
     if do_edges:
         for tdir in sorted(t for d in edge_dirs for t in glob.glob(os.path.join(d, "type*"))):
             typ = os.path.basename(tdir)
@@ -120,9 +159,8 @@ def ingest(folder: str, site: str, do_columns=True, do_edges=True) -> dict:
                 if not os.path.exists(png):
                     print(f"[ingest] {stem}: json without a png, skipped")
                     continue
-                if stem in have_edges:
-                    print(f"[ingest] {stem}: already in data/edges, skipped")
-                    continue
+                # already in data/edges is fine: it is in THIS site's folder, so it is this
+                # site's crop whether or not an earlier run copied it (idempotent re-runs)
                 new_pairs.append((typ, png, js))
                 for src in (png, js):
                     tgt = os.path.join(dst, os.path.basename(src))

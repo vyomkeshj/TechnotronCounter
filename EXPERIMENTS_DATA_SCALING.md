@@ -181,3 +181,37 @@ Consequences:
   **the pinned val would never show it**: `no_t10` scores 17/17 type2 and 18/18 type3
   val while sitting at 1/80 on type10. Gate on the large labelled sets, never on val.
 * This is the measured justification for `field/gate.py`.
+
+## D. SCATTER training and zero-shot transfer to an unseen type (2026-09-21)
+
+`experiments/scatter/`: training scenes = labelled edge patches thrown onto black at
+random position, zoom (0.35-2.2x) and angle (any), target = fg only; `mix50` = half the
+batches from the production window sampler. Same recipe otherwise, 8000 steps, seed 7.
+Leave-one-type-out with the type absent from BOTH windows and patches:
+
+| held-out | set | production-only | scatter mix50 |
+|---|---|---|---|
+| type10 | all 80 labelled | 1 | **73** |
+| type10 | older 122 (unrankable) | 1 | 18 |
+| type2 | all 54 labelled | 22 | 23 |
+| type3 | all 72 labelled | 56 | 61 |
+| type3 | older 300 (131412+131612) | 248 | 229 |
+
+* **type10: 1 -> 73 of 80 zero-shot.** The largest effect measured in this campaign.
+  A model that never saw a type10 sheet counts 91 % of them; production counts 1 %.
+* type2: no transfer gain either way -- type2 stays a cold start (22-23/54).
+* type3: MIXED -- +5 on the 72 labelled, -19 on the 300 older (131612: 155 -> 127,
+  beyond the +-10 band). Do not claim a type3 gain.
+* Cost on the SEEN types at 8000 steps: `scatter_no_t10` scores type2 49/54 vs
+  production 54/54. Known from the mix50 length study: 8000 undertrains mix50
+  (16000 recovers type2 to 51/54, old type3 to 294/300, gate PASS vs the champion).
+
+Scatter val IoU: champion 0.441 (cheat floor 0.383), any scatter-trained model ~0.64-0.66.
+Rotation robustness exists only with an axis-free `cc` counter (`experiments/scatter/
+stress.py`): mix50_16k 94 % at 45 deg, 88 % at 90 deg; champion 25 % / 0 %. Not a
+production concern (the straightener gates the input) -- recorded, not a selection criterion.
+
+Few-shot grid in progress (`fewshot.py` / `fewshot_grid.py` / `fewshot_score.py`):
+K in {0,2,4,8,16,32} crops of the held-out type fine-tuned with the FIELD recipe
+(2500 steps, lr 1e-4, x12 boost) from each base, scored on the unseen remainder AND on
+the other two types with gate tolerances. Results -> `runs/_fewshot_full.csv`.

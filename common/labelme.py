@@ -48,6 +48,8 @@ def column_labels(json_path: str, hw: tuple[int, int] | None = None):
     lut = np.zeros(len(shapes) + 1, np.float32)
     for i, s in enumerate(shapes, 1):
         name = column_label(s["label"])
+        if name in (EDGE, BACKGROUND):
+            continue                      # COMBINED frame: edges are drawn on the same json
         if name not in COLUMN_LABELS:
             raise ValueError(f"{json_path}: unexpected label {s['label']!r} (want {COLUMN_LABELS})")
         cv2.fillPoly(lab, [_poly(s["points"])], i)
@@ -74,6 +76,29 @@ def edge_labels(json_path: str) -> np.ndarray:
         cv2.fillPoly(m, bg, 1)
         lab[m > 0] = 0
     return lab
+
+
+def frame_edge_labels(json_path: str) -> np.ndarray:
+    """Instance map int32 of the EDGE polygons on a COMBINED frame json (one that also
+    carries the column polygons). One id per polygon; column shapes ignored.
+    All-zero if the frame has no edge polygons."""
+    d = json.load(open(json_path, encoding="utf-8"))
+    H, W = int(d["imageHeight"]), int(d["imageWidth"])
+    lab = np.zeros((H, W), np.int32)
+    k = 0
+    for s in d.get("shapes", []):
+        if s["label"] == EDGE and len(s["points"]) >= 3:
+            k += 1
+            cv2.fillPoly(lab, [_poly(s["points"])], k)
+    for s in d.get("shapes", []):
+        if s["label"] == BACKGROUND:
+            m = np.zeros((H, W), np.uint8); cv2.fillPoly(m, [_poly(s["points"])], 1)
+            lab[m > 0] = 0
+    return lab
+
+
+def has_edge_labels(json_path: str) -> bool:
+    return any(s.get("label") == EDGE for s in json.load(open(json_path, encoding="utf-8")).get("shapes", []))
 
 
 def write_polygons(path: str, lab: np.ndarray, label: str, image_name: str,

@@ -52,14 +52,14 @@ def _straight_angle(rects, img_w, straight_plates):
     return float(max(ang1 + ang2)) if (ang1 or ang2) else 0.0
 
 
-def _rotate(image, alfa):
+def _rotate(image, alfa, flags=cv2.INTER_LINEAR):
     m, n = image.shape[:2]
     M = cv2.getRotationMatrix2D((n / 2, m / 2), alfa, 1.0)
     cos, sin = abs(M[0, 0]), abs(M[0, 1])
     bw, bh = int(m * sin + n * cos), int(m * cos + n * sin)
     M[0, 2] += bw / 2 - n / 2
     M[1, 2] += bh / 2 - m / 2
-    return cv2.warpAffine(image, M, (bw, bh))
+    return cv2.warpAffine(image, M, (bw, bh), flags=flags)
 
 
 def _x_limits(shift, rot_mask, rot_outline):
@@ -106,6 +106,73 @@ def straighten_frame(image: np.ndarray, column_json: str) -> list[np.ndarray]:
         crop[rm[:, x0:x1] == 0] = 0
         out.append((x0, cv2.rotate(crop, cv2.ROTATE_180)))
     return [c for _, c in sorted(out, key=lambda t: t[0])]
+
+
+def straighten_frame_pairs(image: np.ndarray, edge_lab: np.ndarray, column_json: str):
+    """COMBINED labelling: the labeller drew columns AND every edge on the same frame.
+
+    Returns [(crop, crop_label)], left to right, with the crop produced by EXACTLY the
+    same operations as `straighten_frame` (same angle, same x-limits, same column mask,
+    same 180 deg turn) and the int32 edge map pushed through the same geometry with
+    nearest-neighbour sampling. Clipping by the column mask is what assigns each edge
+    polygon to its column: an edge drawn inside good_column k survives only in crop k.
+    """
+    shapes = json.load(open(column_json, encoding="utf-8"))["shapes"]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    H, W = gray.shape
+    polys = [np.round(np.array(s["points"], np.float64)).astype(np.int32)
+             for s in shapes if column_label(s["label"]) == "good_column" and len(s["points"]) >= 3]
+    if not polys:
+        return []
+    straight = any(p[:, 0].min() <= 1 and p[:, 0].max() >= W - 1 for p in polys)
+    ang = _straight_angle([cv2.minAreaRect(p) for p in polys], W, straight)
+    rot = _rotate(image, ang)
+    rot_lab = _rotate(edge_lab, ang, flags=cv2.INTER_NEAREST)
+    RH, RW = rot.shape[:2]
+    out = []
+    for p in polys:
+        single = np.zeros_like(gray); cv2.fillPoly(single, [p], 255)
+        outline = np.zeros_like(gray); cv2.drawContours(outline, [p], -1, 255, 1)
+        rm, ro = _rotate(single, ang), _rotate(outline, ang)
+        lmin1, lmax1 = _x_limits(POSUN_MASKY, rm, ro)
+        lmin2, _ = _x_limits(-POSUN_MASKY, rm, ro)
+        if lmin1[0] == 0 and lmin2[0] == 0:
+            continue
+        a, b = sorted((lmin2[1], lmax1[1]))
+        d = b - a
+        cut = CUT_DIS if d > 220 else CUT_DIS_EX if d > 120 else CUT_DIS_EX2
+        x0, x1 = int(np.clip(a - cut, 0, RW - 1)), int(np.clip(b + cut, 0, RW))
+        if x1 <= x0:
+            continue
+        crop = rot[:, x0:x1].copy()
+        lab = rot_lab[:, x0:x1].copy()
+        keep = rm[:, x0:x1] != 0
+        crop[~keep] = 0
+        lab[~keep] = 0
+        out.append((x0, cv2.rotate(crop, cv2.ROTATE_180), cv2.rotate(lab, cv2.ROTATE_180)))
+    return [(c, l) for _, c, l in sorted(out, key=lambda t: t[0])]
+
+
+def to_native_canvas_pair(crop: np.ndarray, lab: np.ndarray, out_h: int = CANVAS_H):
+    """`to_native_canvas` for a crop AND its label, placement computed from the IMAGE
+    so the two land identically. Ids renumbered top-down. None if the crop is."""
+    ys, xs = np.where(crop.max(axis=2) > 0)
+    if ys.size == 0:
+        return None
+    y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+    h = y1 - y0
+    if h > out_h:
+        return None
+    top = min(max(0, y0 - max(0, (crop.shape[0] - out_h) // 2)), out_h - h)
+    canvas = np.zeros((out_h, x1 - x0, 3), np.uint8)
+    canvas[top:top + h] = crop[y0:y1, x0:x1]
+    lcan = np.zeros((out_h, x1 - x0), np.int32)
+    lcan[top:top + h] = lab[y0:y1, x0:x1]
+    out = np.zeros_like(lcan)
+    ids = [i for i in np.unique(lcan) if i]
+    for new, i in enumerate(sorted(ids, key=lambda i: float(np.where(lcan == i)[0].mean())), 1):
+        out[lcan == i] = new
+    return canvas, out
 
 
 def to_native_canvas(crop: np.ndarray, out_h: int = CANVAS_H) -> np.ndarray | None:

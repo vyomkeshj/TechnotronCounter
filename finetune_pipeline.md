@@ -14,20 +14,27 @@ except the Python environment.
 
 ## 0. The loop in one picture
 
+**One labelling pass, on the full frame, in one LabelMe session:** draw the
+`good_column` / `cropped_column` polygons, then one `edge` polygon per sheet inside each
+good column. Then one command:
+
 ```
    you                                    the pipeline
    ───                                    ────────────
-   label 3-5 full frames        ──►  stage 1  fine-tune the COLUMN model, gate it
-   (good_column / cropped_column)
-                                ◄──  stage 2  straighten every column it finds
-   label the sheet edges                     -> <folder>/edges_to_label/typeN/*.png
-   (one "edge" polygon per sheet)
-                                ──►  stage 3  fine-tune the EDGE model, gate it
-                                              -> promoted, or refused with a reason
+   label 3-5 full frames:         ──►  stage 1  fine-tune the COLUMN model, gate it
+   columns AND edges in one go          derive the straightened crops + their edge
+                                        labels from the same frames (no round-trip)
+                                   ──►  stage 3  fine-tune the EDGE model, gate it
+                                                 -> promoted, or refused with a reason
 ```
 
-Two labelling passes. You cannot skip stage 2: the edge model works on *straightened*
-columns, and those only exist after the column model has found the columns.
+The pipeline straightens each good column exactly as production does and carries your
+edge polygons through the identical geometry, so the crop labels are your frame labels
+seen through the straightener (verified to 0.15 px).
+
+The older two-pass route still works if you only label columns: stage 2 then writes
+the straightened columns to `<folder>/edges_to_label/` for you to label, and you re-run
+with `--stage edges`.
 
 ---
 
@@ -113,10 +120,13 @@ site_acme_20260920/
         ...
 ```
 
-Label with **LabelMe**. Column polygons use exactly two labels:
+Label with **LabelMe**, on the full frame. Three labels:
 
 * `good_column` — a column fully visible in the frame
 * `cropped_column` — a column cut off by the frame edge or an occlusion
+* `edge` — one polygon per visible sheet edge, drawn INSIDE a good column. Draw every
+  sheet of every good column you label; a good column with no edges gets a crop but no
+  label. Match the existing band style for the type (§5).
 
 Filenames matter. The pipeline reads the **session** (second `_`-separated field) and
 the **type** from the name, and it uses the session to decide what is a near-duplicate
@@ -132,7 +142,7 @@ ingesting. If the type is not in the name, pass `--type type10` on the command l
 
 ---
 
-## 4. Stage 1 and 2 — columns, then crops to label
+## 4. Run it (combined labels: everything in one go)
 
 **Always look before you leap:**
 
@@ -150,10 +160,13 @@ python -m field.adapt --site acme --from site_acme_20260920
 It will:
 
 1. copy your frames into `data/columns/site_acme/`
-2. fine-tune the column model from the live one, with your frames oversampled
-3. gate the result and promote it, or refuse (see §6)
-4. straighten every column the improved model finds and write them to
-   `site_acme_20260920/edges_to_label/type10/*.png`
+2. derive the straightened crops AND their edge labels into `data/edges/<type>/`
+   (skipped for frames without `edge` polygons -- those get PNGs to label later)
+3. fine-tune the column model from the live one, gate it, promote or refuse (§6)
+4. fine-tune the edge model on the derived crops, gate it, promote or refuse
+
+If none of your frames carry `edge` polygons it stops after the column stage and writes
+`edges_to_label/` for the two-pass route instead.
 
 Expect roughly 10–20 minutes on a desktop GPU, longer on a laptop.
 
@@ -163,11 +176,11 @@ fixed, so the others would just be the same column labelled twice.
 
 ---
 
-## 5. Stage 3 — label the edges, train
+## 5. Edge labelling style (and the two-pass route)
 
-Open the PNGs in `edges_to_label/type10/` in LabelMe. Draw **one polygon per visible
-sheet edge**, label `edge`. Leave the `.json` files next to the PNGs — do not move or
-rename anything.
+Whether you draw edges on the frame (combined) or on the PNGs in `edges_to_label/type10/`
+(two-pass), draw **one polygon per visible sheet edge**, label `edge`. For the two-pass
+route, leave the `.json` files next to the PNGs and re-run with `--stage edges`.
 
 **Match the existing labelling style.** Draw the polygon over the same part of the
 sheet as the existing labels for that type; do not switch between thin lines and thick

@@ -221,7 +221,13 @@ def main():
 
     if args.stage in ("auto", "columns"):
         print("\n" + stage_columns(args, r, tag))
-    if args.stage in ("auto", "crops") and not args.dry_run:
+    if args.stage == "auto" and r["stems"]:
+        # COMBINED labelling: the frames carried the edge polygons, so the edge crops and
+        # their labels were derived at ingest -- no labelling round-trip, go straight on.
+        print(f"\n(combined labels: {len(r['stems'])} edge crops derived from the frames -- "
+              f"skipping the label-me-first stop)")
+        print("\n" + stage_edges(args, r, tag))
+    elif args.stage in ("auto", "crops") and not args.dry_run:
         print("\n" + stage_crops(args))
     if args.stage == "edges":
         print("\n" + stage_edges(args, r, tag))
