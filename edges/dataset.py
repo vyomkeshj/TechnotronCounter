@@ -1,4 +1,4 @@
-﻿"""Edge (sheet) data: straightened single-column crops with per-sheet polygons.
+"""Edge (sheet) data: straightened single-column crops with per-sheet polygons.
 
 STORED FORMAT (data/edges/<type>/):  <frame>_column_<k>.png  + .json
   native straightened column, full native width, black background, fixed height
@@ -99,50 +99,9 @@ def model_input(img: np.ndarray, mode: str = "center") -> np.ndarray:
     return fit_width(*tight(img), mode)[0]
 
 
-def local_lighting(img: np.ndarray, lab: np.ndarray, rng=random) -> np.ndarray:
-    """LOCAL lighting the global photometric aug never produces (the type2 miscounts
-    sat at glare spots): specular glare streaks, a smooth illumination gradient, and
-    soft shadow bands.
-
-    Groove rule: the label still says "two sheets" wherever it did, so the augmentation
-    must never wash a groove out. Glare is elongated ALONG a sheet (oriented from a
-    labelled sheet in the window) and is attenuated to 30 % on unlabelled pixels, so
-    grooves stay darker than the sheets beside them. Shadows and gradients scale all
-    pixels together, which preserves groove contrast by construction.
-    """
-    h, w = lab.shape
-    f = img.astype(np.float32)
-    ids = [i for i in np.unique(lab) if i]
-    if ids and rng.random() < 0.7:                                     # glare patches
-        glare = np.zeros((h, w), np.float32)
-        for _ in range(rng.randint(1, 3)):
-            ys, xs = np.where(lab == rng.choice(ids))
-            if len(ys) < 10:
-                continue
-            c = np.cov(np.stack([xs, ys]).astype(np.float32))
-            ang = float(np.degrees(0.5 * np.arctan2(2 * c[0, 1], c[0, 0] - c[1, 1])))
-            k = rng.randrange(len(ys))
-            axes = (rng.randint(15, 60), rng.randint(3, 18))            # may span several sheets
-            cv2.ellipse(glare, (int(xs[k]), int(ys[k])), axes, ang, 0, 360, rng.uniform(0.6, 1.0), -1)
-        glare = cv2.GaussianBlur(glare, (0, 0), rng.uniform(2, 6))
-        glare *= np.where(lab > 0, 1.0, 0.3)
-        f = f + glare[..., None] * rng.uniform(80, 200)
-    if rng.random() < 0.4:                                             # illumination gradient
-        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-        g = 1 + rng.uniform(-0.35, 0.35) * (xx / w - 0.5) * 2 + rng.uniform(-0.35, 0.35) * (yy / h - 0.5) * 2
-        f = f * g[..., None]
-    if rng.random() < 0.3:                                             # soft shadow band
-        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-        th = np.radians(rng.uniform(-60, 60))
-        d = (xx - w / 2) * np.sin(th) + (yy - rng.uniform(0, h)) * np.cos(th)
-        s = np.exp(-(d / rng.uniform(8, 40)) ** 2)
-        f = f * (1 - rng.uniform(0.3, 0.65) * s)[..., None]
-    return np.clip(f, 0, 255).astype(np.uint8)
-
-
 def local_lighting_v2(img: np.ndarray, rng=random) -> np.ndarray:
-    """Label-FREE local lighting (v1 above was measured negative: dimming glare on
-    unlabelled pixels painted the label boundary into the image, a train-only cue).
+    """Label-FREE local lighting. (An augmentation must never use the label: a version that
+    dimmed glare on unlabelled pixels painted the label boundary into the image and hurt.)
 
     Everything here is computed from the image alone:
       glare     placed anywhere on the column, oriented along the window's dominant
@@ -190,7 +149,7 @@ def load(it: dict) -> tuple[np.ndarray, np.ndarray]:
 
 class EdgeDataset(Dataset):
     def __init__(self, items: list[dict], repeats: int = 64, width_modes: dict = WIDTH_MODES,
-                 lighting: bool = False):
+                 lighting: str = ""):
         self.items = items * repeats
         self.modes, self.weights = list(width_modes), list(width_modes.values())
         self.lighting = lighting
@@ -228,8 +187,6 @@ class EdgeDataset(Dataset):
             wl = cv2.warpAffine(wl, M, (SIZE, SIZE), flags=cv2.INTER_NEAREST)
         if self.lighting == "v2":
             wi = local_lighting_v2(wi)
-        elif self.lighting:
-            wi = local_lighting(wi, wl)
         wi = degrade(photometric(wi))
         return (to_tensor(wi), torch.from_numpy((wl > 0).astype(np.float32))[None],
                 torch.from_numpy(flow_targets(wl, aniso=True)))

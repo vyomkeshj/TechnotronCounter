@@ -1,19 +1,20 @@
-"""Train the column instance model (flow + good/cropped class), two stages.
+"""Train the column model: instance segmentation (flow) + complete/cropped class.
 
-    python -m columns.train --name v1                  # full recipe (~45 min on an RTX 4090)
-    python -m columns.train --name smoke --smoke       # 2-minute plumbing check
+The shipped column model is made in TWO commands (see README, "Reproduce the models"):
+
+    python -m columns.train --name base  --class-override data/columns/relabel_type3_edge_columns.json
+    python -m columns.train --name final --class-override data/columns/relabel_type3_edge_columns.json \
+        --init runs/columns_base/stage2/last.pt --lr 5e-5 --scale-lo 0.65
+    python -m columns.train --name smoke --smoke          # 2-minute plumbing check
 
 Stage 1  3 channels (fg logit, flow dy, flow dx), from scratch, 12000 steps, lr 1e-3 cosine.
 Stage 2  +1 channel P(cropped), initialised from stage-1 LAST, 4000 steps, lr 3e-4.
+--init   skips stage 1 and runs stage 2 only from the given 4-channel checkpoint (fine-tune).
 Loss     BCE(fg) + Dice(fg) + 2.0 * MSE(flow | fg & valid) [+ 1.0 * BCE(cls | fg & valid)]
-Ship     runs/columns_<name>/stage2/last.pt  -- the LAST checkpoint, no selection.
+Output   runs/columns_<name>/stage2/last.pt  -- the LAST checkpoint, no selection.
 
-Recipe facts this encodes (all measured, see README "Why the recipe is what it is"):
-  * 3000 steps under-trains flow models; 4-fold CV showed the curve flat >= 8000.
-  * checkpoint selection on an 18-50 frame val set picks noise (+-0.05): ship last.
-  * TTA / SWA / weight averaging: neutral-to-negative for attractor fields.
-Validation numbers in audit.json are honest ONLY for frames listed in splits.json
-"val"; the in-training val/* curves are the same frames, used for curves only.
+Training frames = every labelled frame NOT in data/columns/splits.json "val"/"excluded"
+(the held-out test sessions). audit.json and the val/* curves are on those held-out frames.
 """
 from __future__ import annotations
 
@@ -125,6 +126,34 @@ def run_stage(stage, out_dir, args, inst, fg_only, val, init=None):
         tr.close(status)
 
 
+def limit_per_type(inst: list[dict], limits: dict[str, int]) -> list[dict]:
+    """Keep N quality frames per limited type: sessions visited round-robin, and within a
+    session frames taken evenly spaced (frames 1 index apart are near-identical). Deterministic."""
+    out = [it for it in inst if it["group"] not in limits]
+    for typ, n in limits.items():
+        by_ses: dict[str, list] = {}
+        for it in sorted((i for i in inst if i["group"] == typ), key=lambda i: i["stem"]):
+            by_ses.setdefault(it["stem"].split("_")[1], []).append(it)
+        order = {}
+        for s, fr in by_ses.items():                 # evenly spaced order: coarse to fine
+            idx, seen, step = [], set(), len(fr)
+            while len(idx) < len(fr):
+                step = max(1, step // 2)
+                for k in range(0, len(fr), step):
+                    if k not in seen:
+                        seen.add(k); idx.append(k)
+            order[s] = [fr[k] for k in idx]
+        picked, r = [], 0
+        while len(picked) < n and any(r < len(v) for v in order.values()):
+            for s in sorted(order):
+                if r < len(order[s]) and len(picked) < n:
+                    picked.append(order[s][r])
+            r += 1
+        print(f"LIMIT {typ}={n}: {[p['stem'][9:22] + '_' + p['stem'][-3:] for p in picked]}")
+        out += picked
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--name", required=True)
@@ -134,22 +163,35 @@ def main():
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--eval-every", type=int, default=500)
-    ap.add_argument("--no-legacy", action="store_true", help="drop the fg-only legacy frames (untested)")
-    ap.add_argument("--init", default="", help="fine-tune from this 4-ch checkpoint: runs STAGE 2 ONLY "
-                                               "(field adaptation -- see field/adapt.py)")
-    ap.add_argument("--lr", type=float, default=0.0, help="override the stage LR; use ~5e-5 with --init")
-    ap.add_argument("--boost-stems", default="", help="file of frame stems, one per line, to OVERSAMPLE "
-                                                      "(3-4 new site frames are otherwise lost in the pool)")
-    ap.add_argument("--boost-factor", type=int, default=12)
+    ap.add_argument("--no-legacy", action="store_true", help="drop the 200 foreground-only legacy frames")
+    ap.add_argument("--init", default="", help="fine-tune from this 4-channel checkpoint: runs STAGE 2 ONLY")
+    ap.add_argument("--lr", type=float, default=0.0, help="override the stage LR (use 5e-5 with --init)")
+    ap.add_argument("--class-override", default="", help="json {frame stem: [shape index (1-based), ...]}: those "
+                    "columns are trained as COMPLETE (fixes a labelling-convention clash, see README)")
+    ap.add_argument("--scale-lo", type=float, default=0.8, help="lower bound of the random scale augmentation "
+                    "(the final model uses 0.65: robust to the camera being further away)")
+    ap.add_argument("--limit-per-type", default="", help="comma list type=N, e.g. type2=4,type3=4,type10=4: keep "
+                    "only N labelled frames of that type, spread over capture sessions (learning-curve study)")
     ap.add_argument("--smoke", action="store_true", help="tiny run to check plumbing")
     args = ap.parse_args()
+    os.environ["COLUMN_SCALE_LO"] = str(args.scale_lo)     # DataLoader workers re-import columns.dataset
+    import columns.dataset as _cd
+    _cd.SCALE_LO = args.scale_lo
     if args.smoke:
         args.steps1, args.steps2, args.eval_every, args.workers = 60, 40, 30, 2
 
     items = discover()
+    if args.class_override:
+        ov = json.load(open(args.class_override))
+        for it in items:
+            if it["stem"] in ov:
+                it["flip_good"] = list(ov[it["stem"]])
+        print(f"CLASS OVERRIDE: {sum(len(v) for v in ov.values())} columns in {len(ov)} frames trained as complete")
     split = sync_split(items)
     val_set, exc = set(split["val"]), set(split["excluded"])
     inst = [it for it in items if it["stem"] not in val_set and it["stem"] not in exc]
+    if args.limit_per_type:
+        inst = limit_per_type(inst, dict((k, int(v)) for k, v in (x.split("=") for x in args.limit_per_type.split(","))))
     val = build_val([it for it in items if it["stem"] in val_set])
     fg_only = [] if args.no_legacy else legacy_items()
     groups = {}
@@ -157,16 +199,8 @@ def main():
         groups[it["group"]] = groups.get(it["group"], 0) + 1
     print(f"columns/{args.name}: train {len(inst)} instance frames (x4) + {len(fg_only)} fg-only | "
           f"val {len(val)} {groups} | excluded {len(exc)}")
-    if args.boost_stems:
-        want = {l.strip() for l in open(args.boost_stems) if l.strip()}
-        extra = [it for it in inst if it["stem"] in want] * (args.boost_factor - 1)
-        missing = want - {it["stem"] for it in inst}
-        if missing:
-            print(f"WARNING: {len(missing)} boosted stems are not in TRAIN (val/excluded?): {sorted(missing)[:3]}")
-        inst = inst + extra
-        print(f"BOOST x{args.boost_factor} on {len(want) - len(missing)} frames -> {len(inst)} sampling slots")
     base = os.path.join(paths.RUNS, f"columns_{args.name}")
-    if args.init:                       # field adaptation: stage 2 only, from the live model
+    if args.init:                       # fine-tune: stage 2 only
         print(f"INIT from {args.init} -- stage 2 only, {args.steps2} steps, lr {args.lr or 3e-4}")
         last, res = run_stage(2, os.path.join(base, "stage2"), args, inst, fg_only, val, init=args.init)
     else:

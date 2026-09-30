@@ -1,17 +1,25 @@
-﻿"""Train the sheet-edge model on human-labelled column crops (all types together).
+"""Train the sheet-edge model on straightened column crops (all types together).
 
-    python -m edges.train --name v1                  # full recipe
-    python -m edges.train --name smoke --smoke       # plumbing check
+The shipped edge models are made in three steps (see README, "Reproduce the models"):
 
-Model   UNet base 16, 3 channels (fg logit, anisotropic flow dy/dx to sheet centre)
-Loss    BCE(fg) + Dice(fg) + 2.0 * MSE(flow | fg)
-Steps   8000, AdamW lr 1e-3 cosine, batch 32 windows of 256 px. Ship LAST.
-Audit   band count + flow instances vs human polygons on pinned val frames,
-        per type, attached to the run and written to audit.json.
+    python -m edges.train --name seed --seed 7 --exclude-session 131412          # 1. seed model
+    python -m tools.pseudo_edges --model edges_seed --out data/edges_pseudo        # 2. self-labelled crops
+    python -m edges.train --name final_a --seed 42 --exclude-session 131412 --extra-data data/edges_pseudo
+    python -m edges.train --name final_b --seed 7  --exclude-session 131412 --extra-data data/edges_pseudo
+    python -m edges.train --name smoke --smoke                                     # plumbing check
+
+Model    UNet base 16, 3 channels (fg logit, anisotropic flow dy/dx to the sheet centre)
+Loss     BCE(fg) + Dice(fg) + 2.0 * MSE(flow | fg)
+Steps    8000, AdamW lr 1e-3 cosine, batch 32 windows of 256 px. Output runs/edges_<name>/last.pt (LAST).
+Input    the centre 74 px of each crop's width (+6 px pad); height never rescaled.
+Aug      photometric + degradation + wide vertical scale jitter + label-free local lighting.
+--exclude-session 131412 keeps type3's held-out test session out of training (the column
+model holds it out too), so tools.evaluate stays honest for both models.
 """
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import random
@@ -65,23 +73,19 @@ def main():
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--eval-every", type=int, default=500)
-    ap.add_argument("--squash-weight", type=float, default=WIDTH_MODES["squash"],
-                    help="share of training windows width-fitted by squash (rest: centre crop)")
-    ap.add_argument("--lighting", nargs="?", const="v1", default="", choices=["", "v1", "v2"],
-                    help="local glare/gradient/shadow aug: v1 (label-guided, measured negative) or v2 (label-free)")
-    ap.add_argument("--only-types", default="", help="comma list, e.g. type3 or type2,type3 (transfer study)")
-    ap.add_argument("--limit-per-type", default="", help="comma list type=N, e.g. type2=8,type10=4 "
-                                                         "(data-scaling study; frame-stratified, deterministic)")
+    ap.add_argument("--squash-weight", type=float, default=0.0,
+                    help="share of training windows width-fitted by squashing instead of centre-cropping "
+                         "(the shipped models use 0 = centre crop only)")
+    ap.add_argument("--lighting", default="v2", choices=["", "v2"],
+                    help="label-free local glare/gradient/shadow augmentation (v2, default) or none")
+    ap.add_argument("--limit-per-type", default="", help="comma list type=N, e.g. type2=2,type3=2,type10=2: keep "
+                    "only N hand-labelled crops of that type (learning-curve study; pseudo crops unaffected)")
     ap.add_argument("--exclude-session", action="append", default=[],
-                    help="drop every crop of this capture session from TRAINING (honest "
-                         "cross-session test: evaluate on that session afterwards)")
-    ap.add_argument("--init", default="", help="start from this checkpoint instead of random "
-                                               "(field adaptation: fine-tune the live model)")
-    ap.add_argument("--lr", type=float, default=1e-3, help="peak LR; use ~1e-4 when --init is set")
-    ap.add_argument("--boost-stems", default="", help="file of crop stems, one per line, to "
-                                                      "OVERSAMPLE (a handful of new site crops is "
-                                                      "otherwise <3 %% of batches and never learnt)")
-    ap.add_argument("--boost-factor", type=int, default=12, help="how many times to repeat each boosted crop")
+                    help="drop every crop of this capture session from training (keeps a test session unseen)")
+    ap.add_argument("--extra-data", action="append", default=[],
+                    help="extra crop tree <dir>/<type>/*.png+.json, e.g. data/edges_pseudo: training only")
+    ap.add_argument("--init", default="", help="start from this checkpoint instead of random (fine-tune)")
+    ap.add_argument("--lr", type=float, default=1e-3, help="peak LR; use ~1e-4 with --init")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
     if args.smoke:
@@ -96,28 +100,24 @@ def main():
         before = len(train)
         train = [it for it in train if not any(s in (_sp.session_of(it["frame"]) or "") for s in args.exclude_session)]
         print(f"HOLDOUT {args.exclude_session}: dropped {before - len(train)} training crops")
-    if args.only_types:
-        keep = {t.strip() for t in args.only_types.split(",")}
-        train = [it for it in train if it["type"] in keep]
-        print(f"ONLY TYPES {sorted(keep)}: {len(train)} training crops")
     if args.limit_per_type:
         limits = {k.strip(): int(v) for k, v in (p.split("=") for p in args.limit_per_type.split(","))}
         train = subsample_per_type(train, limits, args.seed)
         print(f"LIMITS {limits}: {len(train)} training crops "
               f"{ {t: sum(1 for i in train if i['type'] == t) for t in sorted({i['type'] for i in train})} }")
-    boosted = 0
-    if args.boost_stems:
-        want = {l.strip() for l in open(args.boost_stems) if l.strip()}
-        extra = [it for it in train if it["stem"] in want] * (args.boost_factor - 1)
-        missing = want - {it["stem"] for it in train}
-        if missing:
-            print(f"WARNING: {len(missing)} boosted stems are not in TRAIN (val/excluded?): "
-                  f"{sorted(missing)[:3]}")
+    for root in args.extra_data:                      # AFTER the limits: they cap hand labels only
+        extra = []
+        for png in sorted(glob.glob(os.path.join(root, "*", "*.png"))):
+            js = png[:-4] + ".json"
+            if os.path.exists(js):
+                stem = os.path.splitext(os.path.basename(png))[0]
+                frame = stem.rsplit("_column_", 1)[0]
+                if frame in val_f | exc_f or any(x in frame for x in args.exclude_session):
+                    continue
+                extra.append({"stem": stem, "frame": frame,
+                              "type": os.path.basename(os.path.dirname(png)), "image": png, "json": js})
         train = train + extra
-        boosted = len(extra)
-        print(f"BOOST x{args.boost_factor} on {len(want) - len(missing)} stems: "
-              f"+{boosted} repeats -> {len(train)} sampling slots "
-              f"({100 * (boosted + len(want) - len(missing)) / max(1, len(train)):.0f} %% of batches)")
+        print(f"EXTRA {root}: +{len(extra)} training crops")
     val_items = [it for it in items if it["frame"] in val_f]
     vals = {m: build_val(val_items, m) for m in ("center", "squash")}   # every run is scored both ways
     val = vals["center"]

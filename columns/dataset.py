@@ -27,7 +27,8 @@ from common.flows import flow_targets
 from common.imageio import degrade, letterbox, photometric, to_tensor
 
 cv2.setNumThreads(0)
-SIZE = 256
+SIZE = 256                                          # model input (letterboxed)
+SCALE_LO = float(os.environ.get("COLUMN_SCALE_LO", "0.8"))  # scale-aug lower bound; columns.train --scale-lo sets it
 WORK_CAP = 640            # decode once at <= 640 px long side; augmentation cost is O(pixels)
 
 
@@ -69,6 +70,8 @@ def sync_split(items: list[dict], write: bool = True) -> dict:
 def _load_inst(it):
     img = cv2.imread(it["image"], cv2.IMREAD_COLOR)
     lab, lut = labelme.column_labels(it["json"], hw=img.shape[:2])
+    for i in it.get("flip_good", ()):          # train-time label correction (--class-override)
+        lut[i] = 0.0
     s = WORK_CAP / max(img.shape[:2])
     if s < 1:
         img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
@@ -128,7 +131,7 @@ class ColumnDataset(Dataset):
         img, lab = np.ascontiguousarray(img), np.ascontiguousarray(lab)
         if random.random() < 0.7:
             h, w = lab.shape
-            M = cv2.getRotationMatrix2D((w / 2, h / 2), random.uniform(-12, 12), random.uniform(0.8, 1.2))
+            M = cv2.getRotationMatrix2D((w / 2, h / 2), random.uniform(-12, 12), random.uniform(SCALE_LO, 1.2))
             img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR)
             lab = cv2.warpAffine(lab, M, (w, h), flags=cv2.INTER_NEAREST)
         img = degrade(photometric(img))
@@ -147,6 +150,8 @@ def build_val(items: list[dict]) -> list[dict]:
     for it in items:
         img = cv2.imread(it["image"], cv2.IMREAD_COLOR)
         lab, lut = labelme.column_labels(it["json"], hw=img.shape[:2])
+        for i in it.get("flip_good", ()):      # label correction (--class-override): train as complete
+            lut[i] = 0.0
         imgL, _, _, _ = letterbox(img, SIZE, 0, cv2.INTER_LINEAR)
         labL, _, _, _ = letterbox(lab, SIZE, 0, cv2.INTER_NEAREST)
         out.append({**it, "x": to_tensor(imgL), "gt": labL, "lut": lut})

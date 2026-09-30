@@ -1,0 +1,78 @@
+{
+ "center": {
+  "type10": {
+   "n": 15,
+   "count_mae": 0.0,
+   "count_exact": 1.0,
+   "count_within1": 1.0,
+   "count_bias": 0.0,
+   "inst_count_mae": 0.0,
+   "inst_iou": 0.721737423692296
+  },
+  "all": {
+   "n": 50,
+   "count_mae": 0.02,
+   "count_exact": 0.98,
+   "count_within1": 1.0,
+   "count_bias": 0.02,
+   "inst_count_mae": 0.02,
+   "inst_iou": 0.6083567601359007
+  },
+  "type2": {
+   "n": 17,
+   "count_mae": 0.058823529411764705,
+   "count_exact": 0.9411764705882353,
+   "count_within1": 1.0,
+   "count_bias": 0.058823529411764705,
+   "inst_count_mae": 0.058823529411764705,
+   "inst_iou": 0.5723050921526026
+  },
+  "type3": {
+   "n": 18,
+   "count_mae": 0.0,
+   "count_exact": 1.0,
+   "count_within1": 1.0,
+   "count_bias": 0.0,
+   "inst_count_mae": 0.0,
+   "inst_iou": 0.5479216713786863
+  }
+ },
+ "squash": {
+  "type10": {
+   "n": 15,
+   "count_mae": 0.0,
+   "count_exact": 1.0,
+   "count_within1": 1.0,
+   "count_bias": 0.0,
+   "inst_count_mae": 0.0,
+   "inst_iou": 0.7297560481352008
+  },
+  "all": {
+   "n": 50,
+   "count_mae": 3.0,
+   "count_exact": 0.76,
+   "count_within1": 0.82,
+   "count_bias": -2.92,
+   "inst_count_mae": 3.0,
+   "inst_iou": 0.506912134632177
+  },
+  "type2": {
+   "n": 17,
+   "count_mae": 8.823529411764707,
+   "count_exact": 0.29411764705882354,
+   "count_within1": 0.47058823529411764,
+   "count_bias": -8.588235294117647,
+   "inst_count_mae": 8.823529411764707,
+   "inst_iou": 0.26686328969202844
+  },
+  "type3": {
+   "n": 18,
+   "count_mae": 0.0,
+   "count_exact": 1.0,
+   "count_within1": 1.0,
+   "count_bias": 0.0,
+   "inst_count_mae": 0.0,
+   "inst_iou": 0.5479216713786863
+  }
+ }
+}

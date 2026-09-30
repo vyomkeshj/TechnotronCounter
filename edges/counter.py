@@ -44,19 +44,29 @@ def band(fg: np.ndarray, frac: float = BAND_FRAC) -> tuple[int, int]:
 
 
 def band_count(fg: np.ndarray, frac: float = BAND_FRAC, min_area: int = MIN_AREA,
-               rel_floor: float = REL_FLOOR) -> int:
+               rel_floor: float = REL_FLOOR, end_floor: float = 0.0) -> int:
+    """end_floor (default off): the FIRST and LAST counted blob along the column must also
+    reach end_floor x the median blob area (drops a sliver of a neighbouring column the
+    column outline took in). The inference package uses 0.5."""
     a, b = band(fg, frac)
     sub = fg[:, a:b].astype(np.uint8)
     if sub.size == 0:
         return 0
-    n, cc = cv2.connectedComponents(sub, connectivity=8)
+    n, cc, st, cen = cv2.connectedComponentsWithStats(sub, connectivity=8)
     if n <= 1:
         return 0
-    areas = np.bincount(cc.ravel())[1:]
-    areas = areas[areas >= min_area]
-    if rel_floor and areas.size:
-        areas = areas[areas >= rel_floor * np.median(areas)]
-    return int(areas.size)
+    areas = st[1:, cv2.CC_STAT_AREA]
+    keep = areas >= min_area
+    if rel_floor and keep.any():
+        keep &= areas >= rel_floor * np.median(areas[keep])
+    if end_floor and keep.sum() > 2:
+        med = np.median(areas[keep])
+        idx = np.where(keep)[0]
+        idx = idx[np.argsort(cen[1:, 1][idx])]
+        for i in (idx[0], idx[-1]):
+            if areas[i] < end_floor * med:
+                keep[i] = False
+    return int(keep.sum())
 
 
 def read(net, img: np.ndarray, device: str, masks: str = "grow") -> dict:

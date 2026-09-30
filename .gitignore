@@ -7,27 +7,33 @@ __pycache__/
 *.log
 *.tmp
 
-# Experiment history. runs/ holds 48 runs / 1.3 GB on the dev box; ONLY the two models
-# that are actually shipped are tracked. If you add a new champion, un-ignore it here
-# and update field/registry.py DEFAULTS in the same commit.
+# runs/: only the five checkpoints behind the shipped models are tracked (see README,
+# "Reproduce the models"); everything a tool or a new training run writes stays local.
 runs/*
-!runs/edges_all3_s7/
-runs/edges_all3_s7/*
-!runs/edges_all3_s7/last.pt
-!runs/edges_all3_s7/audit.json
-!runs/columns_v1/
-runs/columns_v1/*
-!runs/columns_v1/stage2/
-runs/columns_v1/stage2/*
-!runs/columns_v1/stage2/last.pt
-!runs/columns_v1/stage2/audit.json
+!runs/columns_base/
+runs/columns_base/*
+!runs/columns_base/stage2/
+runs/columns_base/stage2/*
+!runs/columns_base/stage2/last.pt
+!runs/columns_base/stage2/audit.json
+!runs/columns_final/
+runs/columns_final/*
+!runs/columns_final/stage2/
+runs/columns_final/stage2/*
+!runs/columns_final/stage2/last.pt
+!runs/columns_final/stage2/audit.json
+!runs/edges_seed/
+runs/edges_seed/*
+!runs/edges_seed/last.pt
+!runs/edges_seed/audit.json
+!runs/edges_final_a/
+runs/edges_final_a/*
+!runs/edges_final_a/last.pt
+!runs/edges_final_a/audit.json
+!runs/edges_final_b/
+runs/edges_final_b/*
+!runs/edges_final_b/last.pt
+!runs/edges_final_b/audit.json
 
-# Which model is live is LOCAL state: a site promotes its own and must not push that
-# back. Absent, field/registry.py falls back to the shipped defaults above.
-runs/_active.json
-
-# TensorBoard event files are run history, not source (kept locally, never committed)
+# TensorBoard event files are run history, not source
 *.tfevents.*
-
-# Superseded export -- onnx/sheet_edges.onnx is the current one
-onnx/sheet_edges_prev_type23only.onnx
