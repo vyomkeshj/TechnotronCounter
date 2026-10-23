@@ -19,6 +19,7 @@ Training frames = every labelled frame NOT in data/columns/splits.json "val"/"ex
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import random
@@ -31,6 +32,7 @@ from torch.utils.data import DataLoader
 import paths
 from columns.dataset import ColumnDataset, build_val, discover, legacy_items, sync_split
 from columns.evaluate import evaluate, preview
+from common import labelme
 from common.tracking import Tracker
 from common.unet import UNet, save_checkpoint
 
@@ -172,6 +174,11 @@ def main():
                     "(the final model uses 0.65: robust to the camera being further away)")
     ap.add_argument("--limit-per-type", default="", help="comma list type=N, e.g. type2=4,type3=4,type10=4: keep "
                     "only N labelled frames of that type, spread over capture sessions (learning-curve study)")
+    ap.add_argument("--extra-data", action="append", default=[],
+                    help="extra LabelMe column frames <dir>[:N] (searched recursively, e.g. data/oct26/frames:4); "
+                         "training only, each frame repeated N times")
+    ap.add_argument("--extra-holdout", action="append", default=[],
+                    help="drop extra-data frames whose name contains this (recipe selection holdout)")
     ap.add_argument("--smoke", action="store_true", help="tiny run to check plumbing")
     args = ap.parse_args()
     os.environ["COLUMN_SCALE_LO"] = str(args.scale_lo)     # DataLoader workers re-import columns.dataset
@@ -192,6 +199,18 @@ def main():
     inst = [it for it in items if it["stem"] not in val_set and it["stem"] not in exc]
     if args.limit_per_type:
         inst = limit_per_type(inst, dict((k, int(v)) for k, v in (x.split("=") for x in args.limit_per_type.split(","))))
+    for spec in args.extra_data:
+        root, _, rep = spec.partition(":")
+        extra = []
+        for js in sorted(glob.glob(os.path.join(root, "**", "*.json"), recursive=True)):
+            stem = os.path.splitext(os.path.basename(js))[0]
+            img = labelme.image_for(js)
+            if img is None or any(x in stem for x in args.extra_holdout):
+                continue
+            extra.append({"stem": stem, "image": img, "json": js, "source": root,
+                          "group": os.path.basename(os.path.dirname(js))})
+        inst = inst + extra * int(rep or 1)
+        print(f"EXTRA {root}: +{len(extra)} frames x{int(rep or 1)}")
     val = build_val([it for it in items if it["stem"] in val_set])
     fg_only = [] if args.no_legacy else legacy_items()
     groups = {}
