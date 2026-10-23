@@ -7,8 +7,8 @@ reproduce the numbers and the models, and the list of things that did not work.
 Rules that matter here:
 - The measure of success is the **sheet count** per complete column (type3 50, type10 24, type2 the
   `_NNpieces_` number). Mask IoU does not rank models.
-- Score every change with `python -m tools.evaluate` (held-out test, expected 0.988 single / 0.994 voted) AND
-  `python -m tools.unseen_check` (unseen type2 frames, ~70 % / ~71 % voted); for sheet-mask quality
+- Score every change with `python -m tools.evaluate` (held-out test, expected 0.994 single / 1.000 voted) AND
+  `python -m tools.unseen_check` (unseen type2 frames, ~73 % / ~75 % voted); for sheet-mask quality
   also `tools.fragment_eval` / `tools.fragment_stress`. A change that only
   improves the 20-column type2 test set is usually a fluke: check the larger unseen set and
   **look at the masks** (`inference/predict.py --save-crops`, `tools/report.py`) before believing it.

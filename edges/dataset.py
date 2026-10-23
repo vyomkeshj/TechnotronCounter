@@ -172,11 +172,12 @@ def load(it: dict) -> tuple[np.ndarray, np.ndarray]:
 class EdgeDataset(Dataset):
     def __init__(self, items: list[dict], repeats: int = 64, width_modes: dict = WIDTH_MODES,
                  lighting: str = "", texture: float = 0.0, texture_max: float = 0.40,
-                 texture_skip: tuple = ()):
+                 texture_skip: tuple = (), rot_max: float = 6.0):
         self.items = items * repeats
         self.modes, self.weights = list(width_modes), list(width_modes.values())
         self.lighting = lighting
         self.texture, self.texture_max, self.texture_skip = texture, texture_max, set(texture_skip)
+        self.rot_max = rot_max
         self._cache: dict = {}
 
     def __len__(self):
@@ -206,7 +207,7 @@ class EdgeDataset(Dataset):
             wi, wl = wi[:, ::-1], wl[:, ::-1]
         wi, wl = np.ascontiguousarray(wi), np.ascontiguousarray(wl)
         if random.random() < 0.6:
-            M = cv2.getRotationMatrix2D((SIZE / 2, SIZE / 2), random.uniform(-6, 6), 1.0)
+            M = cv2.getRotationMatrix2D((SIZE / 2, SIZE / 2), random.uniform(-self.rot_max, self.rot_max), 1.0)
             wi = cv2.warpAffine(wi, M, (SIZE, SIZE), flags=cv2.INTER_LINEAR)
             wl = cv2.warpAffine(wl, M, (SIZE, SIZE), flags=cv2.INTER_NEAREST)
         if self.lighting == "v2":
@@ -215,7 +216,8 @@ class EdgeDataset(Dataset):
             wi = surface_texture(wi, max_strength=self.texture_max)
         wi = degrade(photometric(wi))
         return (to_tensor(wi), torch.from_numpy((wl > 0).astype(np.float32))[None],
-                torch.from_numpy(flow_targets(wl, aniso=True)))
+                torch.from_numpy(flow_targets(wl, aniso=True)),
+                torch.tensor(0.0 if it["type"] in self.texture_skip else 1.0))   # 0 = exempt from extra losses
 
 
 def build_val(items: list[dict], mode: str = "center") -> list[dict]:

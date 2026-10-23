@@ -45,3 +45,11 @@ runs/edges_oct_a/*
 runs/edges_oct_b/*
 !runs/edges_oct_b/last.pt
 !runs/edges_oct_b/audit.json
+!runs/edges_r3_a/
+runs/edges_r3_a/*
+!runs/edges_r3_a/last.pt
+!runs/edges_r3_a/audit.json
+!runs/edges_r3_b/
+runs/edges_r3_b/*
+!runs/edges_r3_b/last.pt
+!runs/edges_r3_b/audit.json

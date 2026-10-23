@@ -117,6 +117,9 @@ def main():
     ap.add_argument("--texture-max", type=float, default=0.40, help="max grain strength of --texture")
     ap.add_argument("--texture-skip", action="append", default=[],
                     help="crop type (folder) that never gets the texture augmentation, e.g. type2")
+    ap.add_argument("--cldice-skip-exempt", action="store_true",
+                    help="also exempt the --texture-skip crop types from the clDice loss")
+    ap.add_argument("--rot-max", type=float, default=6.0, help="rotation augmentation range in degrees (+-)")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
     if args.smoke:
@@ -166,7 +169,7 @@ def main():
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     modes = {"center": 1 - args.squash_weight, "squash": args.squash_weight}
     ld = DataLoader(EdgeDataset(train, width_modes=modes, lighting=args.lighting, texture=args.texture, texture_max=args.texture_max,
-                                    texture_skip=args.texture_skip), args.batch, shuffle=True, num_workers=args.workers,
+                                    texture_skip=args.texture_skip, rot_max=args.rot_max), args.batch, shuffle=True, num_workers=args.workers,
                     drop_last=True, pin_memory=True, persistent_workers=args.workers > 0,
                     prefetch_factor=4 if args.workers > 0 else None)
     if args.init:
@@ -190,7 +193,7 @@ def main():
     try:
         for step in range(1, args.steps + 1):
             net.train()
-            x, fg, fl = (t.to(DEVICE, non_blocking=True) for t in next(it))
+            x, fg, fl, keep = (t.to(DEVICE, non_blocking=True) for t in next(it))
             out = net(x)
             bce = F.binary_cross_entropy_with_logits(out[:, :1], fg)
             p = torch.sigmoid(out[:, :1])
@@ -199,7 +202,8 @@ def main():
             loss = bce + dice + 2.0 * mse
             parts = [("bce", bce), ("dice", dice), ("mse", mse)]
             if args.cldice:
-                cl = soft_cldice(p, fg)
+                k = keep > 0.5 if args.cldice_skip_exempt else torch.ones_like(keep, dtype=torch.bool)
+                cl = soft_cldice(p[k], fg[k]) if k.any() else p.sum() * 0
                 loss = loss + args.cldice * cl
                 parts.append(("cldice", cl))
             opt.zero_grad(set_to_none=True); loss.backward(); opt.step(); sch.step()
