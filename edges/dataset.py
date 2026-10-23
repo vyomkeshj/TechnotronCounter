@@ -139,6 +139,28 @@ def local_lighting_v2(img: np.ndarray, rng=random) -> np.ndarray:
     return np.clip(f, 0, 255).astype(np.uint8)
 
 
+def surface_texture(img: np.ndarray, rng=random, max_strength: float = 0.40) -> np.ndarray:
+    """Label-FREE surface texture: multiplicative grain on the metal, random scale (0.6-3 px),
+    strength (10-40 %) and sometimes stretched into streaks at a random angle. Teaches the model
+    that surface texture is not a sheet boundary (field report: textured sheets gave broken masks)."""
+    h, w = img.shape[:2]
+    content = img.max(axis=2) > 0
+    n = np.random.default_rng(rng.randrange(1 << 30)).normal(0, 1, (h, w)).astype(np.float32)
+    s = rng.uniform(0.6, 3.0)
+    if rng.random() < 0.5:
+        sx, sy = s * rng.uniform(2, 5), s
+        n = cv2.GaussianBlur(n, (0, 0), sigmaX=sx, sigmaY=sy)
+        M = cv2.getRotationMatrix2D((w / 2, h / 2), rng.uniform(0, 180), 1.0)
+        n = cv2.warpAffine(n, M, (w, h), borderMode=cv2.BORDER_REFLECT)
+    else:
+        n = cv2.GaussianBlur(n, (0, 0), s)
+    n /= n.std() + 1e-6
+    f = img.astype(np.float32) * (1 + rng.uniform(0.10, max_strength) * n)[..., None]
+    out = np.clip(f, 0, 255).astype(np.uint8)
+    out[~content] = 0
+    return out
+
+
 def load(it: dict) -> tuple[np.ndarray, np.ndarray]:
     img = cv2.imread(it["image"], cv2.IMREAD_COLOR)
     lab = labelme.edge_labels(it["json"])
@@ -149,10 +171,12 @@ def load(it: dict) -> tuple[np.ndarray, np.ndarray]:
 
 class EdgeDataset(Dataset):
     def __init__(self, items: list[dict], repeats: int = 64, width_modes: dict = WIDTH_MODES,
-                 lighting: str = ""):
+                 lighting: str = "", texture: float = 0.0, texture_max: float = 0.40,
+                 texture_skip: tuple = ()):
         self.items = items * repeats
         self.modes, self.weights = list(width_modes), list(width_modes.values())
         self.lighting = lighting
+        self.texture, self.texture_max, self.texture_skip = texture, texture_max, set(texture_skip)
         self._cache: dict = {}
 
     def __len__(self):
@@ -187,6 +211,8 @@ class EdgeDataset(Dataset):
             wl = cv2.warpAffine(wl, M, (SIZE, SIZE), flags=cv2.INTER_NEAREST)
         if self.lighting == "v2":
             wi = local_lighting_v2(wi)
+        if self.texture and it["type"] not in self.texture_skip and random.random() < self.texture:
+            wi = surface_texture(wi, max_strength=self.texture_max)
         wi = degrade(photometric(wi))
         return (to_tensor(wi), torch.from_numpy((wl > 0).astype(np.float32))[None],
                 torch.from_numpy(flow_targets(wl, aniso=True)))

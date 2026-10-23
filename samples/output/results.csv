@@ -14,7 +14,7 @@ frame,type,column,class,count,uncertain,why,voted_count,centre_x,centre_y,p_crop
 20260626_131412_type3_-2_60pieces_004,type3,,cropped,,,,,1507.9,875.9,0.999
 20260626_131412_type3_-2_60pieces_004,type3,,cropped,,,,,1572.0,935.8,0.998
 20260626_132812_type2_-3_50pieces_027,type2,,cropped,,,,,1084.8,530.2,0.996
-20260626_132812_type2_-3_50pieces_027,type2,0,good,49,1,column end ambiguous (50 with a 1 px wider outline),,1100.0,759.7,0.001
+20260626_132812_type2_-3_50pieces_027,type2,0,good,50,1,"edge models disagree [49, 50]",,1100.0,759.7,0.001
 20260626_132812_type2_-3_50pieces_027,type2,,cropped,,,,,1115.2,963.0,0.996
 20260626_134020_type2_-1_30pieces_013,type2,,cropped,,,,,1042.7,998.3,0.992
 20260626_134020_type2_-1_30pieces_013,type2,0,good,30,0,,,1043.3,791.4,0.0

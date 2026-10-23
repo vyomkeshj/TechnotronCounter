@@ -18,18 +18,24 @@ complete columns:
 | type | complete columns counted exactly | expected count |
 |---|---|---|
 | type3 | **126 / 126** | 50 |
-| type10 | **23 / 23** | 24 |
+| type10 | **22 / 23** (23 / 23 with 5-frame voting) | 24 |
 | type2 | **19 / 20** | 50 or 30 (the `_NNpieces_` number in the file name) |
+
+Score 0.988 single frame, 0.994 with 5-frame voting (models of 2026-10-23; the 2026-09-30 pair
+scored 0.994 / 0.994 -- the one extra miss, a type10 column end, is flagged uncertain).
 
 **Self-check:** every counted column is also counted by each edge model alone and from a
 column outline one pixel wider; if any count differs the column is flagged **uncertain** (take
 another photo). On the held-out frames, every column that is NOT flagged is correct:
-type2 19/19, type3 126/126, type10 21/21 (3 flags in 169 columns, one of them the one error).
+type2 18/18, type3 126/126, type10 22/22 (both errors are flagged).
 
 Other checks (all reproducible, see "Reproduce the numbers"):
-- **Unseen type2 frames** (108 unlabelled frames, `data/unlabelled`): ~73 % exact per frame,
-  ~75 % with 5-frame voting; of the columns NOT flagged, 91.5 % are exact. Type2 on brand-new
+- **Unseen type2 frames** (108 unlabelled frames, `data/unlabelled`): ~70 % exact per frame,
+  ~71 % with 5-frame voting (2026-09-30 pair: 73 % / 75 %). Type2 on brand-new
   frames is the weak spot, mostly its steep S-curve variant (session 133033).
+- **Broken sheet masks** (`tools/fragment_eval.py`, `tools/fragment_stress.py`; one labelled sheet
+  predicted as several pieces): 0.9 % of 1930 held-out labelled sheets; with a surface-texture
+  overlay on the photo 12.5 % (2026-09-30 pair: 1.6 % and 30 %).
 - **Robustness** (held-out frames, perturbed): brightness x0.6/x1.4, noise, JPEG q30, slight blur,
   colour cast: 0.97-0.99 overall. Low contrast 0.970, 4 deg rotation 0.976, zoom-out 5 % 0.964,
   10 % 0.911. Keep the camera where it is.
@@ -100,7 +106,7 @@ out at full height, everything outside its outline blacked out, rotated 180 deg 
 
 **3. Edge segmenter** (`models/sheet_edges_a.onnx`, `sheet_edges_b.onnx`). The strip is cropped
 tight (6 px pad) and to the centre 74 px of its width, then padded to a multiple of 16. Two UNets
-(same recipe, different seeds) each predict a sheet-foreground probability; they are averaged
+(same recipe, different seeds; `runs/edges_oct_a`, `edges_oct_b`) each predict a sheet-foreground probability; they are averaged
 (this removes seed-to-seed noise) and thresholded at 0.5.
 
 **4. Counter.** Take the centre 50 % of the strip's width; count connected components of the
@@ -135,8 +141,12 @@ data/columns/               labelled frames (LabelMe good_column / cropped_colum
 data/edges/                 human-labelled straightened crops (LabelMe "edge" polygon per sheet),
                             splits.json
 data/edges_pseudo/          self-labelled crops (made by tools/pseudo_edges.py)
+data/oct26/                 October 2026 field labels, kept separate and grouped as delivered (not by
+                            type): frames/<folder>/ (15 frames, columns + every sheet edge on the
+                            full frame) and edges/<folder>/ (16 straightened strips + labels, made
+                            by edges/from_frames.py). See data/oct26/README.md
 data/unlabelled/type2/      108 frames with no label of any kind (for tools/unseen_check.py)
-runs/                       the five checkpoints behind the shipped models (see below)
+runs/                       the checkpoints behind the shipped models (see below)
 paths.py                    every location, relative to this folder
 ```
 
@@ -147,7 +157,9 @@ Run everything from this folder with Python 3.10+ (developed on 3.13, Windows, R
 ```bash
 pip install -r requirements.txt           # after installing torch for your CUDA from pytorch.org
 python -m tools.evaluate --vote 5         # the table above; writes runs/_evaluate/columns.csv
-python -m tools.unseen_check              # unseen type2 frames (~73 % / ~75 % voted)
+python -m tools.unseen_check              # unseen type2 frames (~70 % / ~71 % voted)
+python -m tools.fragment_eval runs/edges_oct_a/last.pt runs/edges_oct_b/last.pt   # broken sheet masks
+python -m tools.fragment_stress runs/edges_oct_a/last.pt runs/edges_oct_b/last.pt --sets old_val
 python -m tools.stress                    # robustness table (slow: ~12 perturbations x 40 frames)
 python -m tools.report                    # one render per held-out frame -> runs/_report/
 ```
@@ -156,15 +168,15 @@ Expected `tools.evaluate` output with the shipped models:
 
 ```
 type    complete  exact  wrong  cropped  missed  false   score  unflagged correct   voted
-type2         20     19      1        0       0      0   0.950           19/19      0.950
+type2         20     19      1        0       0      0   0.950           18/18      0.950
 type3        126    126      0        0       0      0   1.000          126/126     1.000
-type10        23     23      0        0       0      0   1.000           21/21      1.000
-all          169    168      1        0       0      0   0.994          166/166     0.994
+type10        23     22      1        0       0      0   0.957           22/22      1.000
+all          169    167      2        0       0      0   0.988          166/166     0.994
 ```
 
 ## Reproduce the models
 
-Five training runs (~2 h on one RTX 4090), then an ONNX export. The held-out test sessions
+Seven training runs (~2.5 h on one RTX 4090), then an ONNX export. The held-out test sessions
 (type2 132812 + 134020, type3 131412, type10 frames 9-14) are never trained on: the column split
 holds them out, and `--exclude-session 131412` keeps type3's test session out of the edge model.
 
@@ -180,15 +192,23 @@ python -m tools.pseudo_edges --model edges_seed --out data/edges_pseudo
 python -m edges.train --name final_a --seed 42 --exclude-session 131412 --extra-data data/edges_pseudo
 python -m edges.train --name final_b --seed 7  --exclude-session 131412 --extra-data data/edges_pseudo
 
+# 2026-10-23: fine-tune each with the October field labels (x4), a connectivity loss and texture aug
+python -m edges.train --name oct_a --seed 42 --init runs/edges_final_a/last.pt --lr 2e-4 --steps 4000 \
+    --exclude-session 131412 --extra-data data/edges_pseudo --extra-data data/oct26/edges:4 \
+    --cldice 0.5 --texture 0.3 --texture-max 0.25
+python -m edges.train --name oct_b --seed 7  --init runs/edges_final_b/last.pt --lr 2e-4 --steps 4000 \
+    --exclude-session 131412 --extra-data data/edges_pseudo --extra-data data/oct26/edges:4 \
+    --cldice 0.5 --texture 0.3 --texture-max 0.25
+
 # export to the inference package, then score
 python -m common.export_onnx runs/columns_final/stage2/last.pt inference/models/column_flow.onnx
-python -m common.export_onnx runs/edges_final_a/last.pt inference/models/sheet_edges_a.onnx
-python -m common.export_onnx runs/edges_final_b/last.pt inference/models/sheet_edges_b.onnx
+python -m common.export_onnx runs/edges_oct_a/last.pt inference/models/sheet_edges_a.onnx
+python -m common.export_onnx runs/edges_oct_b/last.pt inference/models/sheet_edges_b.onnx
 python -m tools.evaluate
 ```
 
-The five checkpoints this produced are in `runs/` (`columns_base`, `columns_final`,
-`edges_seed`, `edges_final_a`, `edges_final_b`), so any step can start from the shipped
+The checkpoints this produced are in `runs/` (`columns_base`, `columns_final`,
+`edges_seed`, `edges_final_a`, `edges_final_b`, `edges_oct_a`, `edges_oct_b`), so any step can start from the shipped
 result. `tools/pseudo_edges.py` regenerates `data/edges_pseudo/` byte-identically from
 `runs/edges_seed`. GPU training is not bit-deterministic (cuDNN, data-loader order): a retrained
 model can differ from the shipped one by a column or two on the held-out set; judge with
@@ -206,6 +226,11 @@ What the recipe steps are for:
   the column-training frames; a crop is kept only if its count equals the product count, which
   the model never sees. Type3 edge training data goes from 9 hand-labelled crops to 170.
 - **Two edge models averaged**: removes seed-to-seed noise in the count.
+- **October fine-tune** (field report: textured sheets gave broken, jagged masks): `--cldice 0.5`
+  (soft-clDice connectivity loss; 1.0 was also good, 2.0 fattens sheets until neighbours merge),
+  `--texture 0.3 --texture-max 0.25` (label-free surface grain/streaks; stronger texture halves the
+  broken masks again but costs ~5 points on unseen type2), fine-tuning from the previous pair (from
+  scratch gave a confident type10 +1). `data/oct26/edges:4` repeats the 16 new strips 4x.
 
 ## Data
 
@@ -243,6 +268,8 @@ What the recipe steps are for:
 - Full +-180 deg rotation augmentation (the gravity prior matters); inference-time upscaling of
   strips (the edge model is tuned to the native sheet pitch); a label-guided lighting augmentation
   (an augmentation must never use the label).
+- clDice weight 2.0 (sheets fuse; type2 17/20); strong texture augmentation (p 0.5, 40 %) without
+  restriction (unseen type2 65 %).
 - Ranking models by mask IoU: the count is the measure of success; IoU does not rank models.
 
 ## Practical notes

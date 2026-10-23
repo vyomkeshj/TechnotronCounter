@@ -39,6 +39,27 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MONITOR, GROUP = "Technotron Sheet Flow", "pipeline-edges"
 
 
+def _soft_skel(x: torch.Tensor, iters: int) -> torch.Tensor:
+    """Differentiable skeleton (Shit et al., clDice, CVPR 2021): iterated soft erosion/opening."""
+    erode = lambda t: -F.max_pool2d(-t, 3, 1, 1)
+    dilate = lambda t: F.max_pool2d(t, 3, 1, 1)
+    skel = F.relu(x - dilate(erode(x)))
+    for _ in range(iters):
+        x = erode(x)
+        delta = F.relu(x - dilate(erode(x)))
+        skel = skel + F.relu(delta - skel * delta)
+    return skel
+
+
+def soft_cldice(p: torch.Tensor, gt: torch.Tensor, iters: int = 5) -> torch.Tensor:
+    """1 - clDice: penalises predicted sheets whose centre-line breaks (topology), which plain
+    Dice barely notices because a gap is only a few pixels."""
+    sp, sg = _soft_skel(p, iters), _soft_skel(gt, iters)
+    tprec = ((sp * gt).sum() + 1e-6) / (sp.sum() + 1e-6)
+    tsens = ((sg * p).sum() + 1e-6) / (sg.sum() + 1e-6)
+    return 1 - 2 * tprec * tsens / (tprec + tsens)
+
+
 def subsample_per_type(train: list[dict], limits: dict[str, int], seed: int) -> list[dict]:
     """Keep N crops of each limited type, SPREAD ACROSS FRAMES (take one crop per frame
     round-robin) so a small budget is not all from one photo. Deterministic in `seed`."""
@@ -83,9 +104,19 @@ def main():
     ap.add_argument("--exclude-session", action="append", default=[],
                     help="drop every crop of this capture session from training (keeps a test session unseen)")
     ap.add_argument("--extra-data", action="append", default=[],
-                    help="extra crop tree <dir>/<type>/*.png+.json, e.g. data/edges_pseudo: training only")
+                    help="extra crop tree <dir>/<group>/*.png+.json, e.g. data/edges_pseudo: training only. "
+                         "<dir>:N repeats each crop N times (weight a small high-quality set)")
+    ap.add_argument("--extra-holdout", action="append", default=[],
+                    help="drop extra-data crops whose name contains this (recipe selection holdout)")
     ap.add_argument("--init", default="", help="start from this checkpoint instead of random (fine-tune)")
     ap.add_argument("--lr", type=float, default=1e-3, help="peak LR; use ~1e-4 with --init")
+    ap.add_argument("--cldice", type=float, default=0.0,
+                    help="weight of the soft-clDice connectivity loss on the sheet foreground (0 = off)")
+    ap.add_argument("--texture", type=float, default=0.0,
+                    help="probability of the label-free surface-texture augmentation (0 = off)")
+    ap.add_argument("--texture-max", type=float, default=0.40, help="max grain strength of --texture")
+    ap.add_argument("--texture-skip", action="append", default=[],
+                    help="crop type (folder) that never gets the texture augmentation, e.g. type2")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
     if args.smoke:
@@ -105,7 +136,9 @@ def main():
         train = subsample_per_type(train, limits, args.seed)
         print(f"LIMITS {limits}: {len(train)} training crops "
               f"{ {t: sum(1 for i in train if i['type'] == t) for t in sorted({i['type'] for i in train})} }")
-    for root in args.extra_data:                      # AFTER the limits: they cap hand labels only
+    for spec in args.extra_data:                      # AFTER the limits: they cap hand labels only
+        root, _, rep = spec.partition(":")
+        rep = int(rep) if rep else 1
         extra = []
         for png in sorted(glob.glob(os.path.join(root, "*", "*.png"))):
             js = png[:-4] + ".json"
@@ -114,10 +147,12 @@ def main():
                 frame = stem.rsplit("_column_", 1)[0]
                 if frame in val_f | exc_f or any(x in frame for x in args.exclude_session):
                     continue
+                if any(x in stem for x in args.extra_holdout):
+                    continue
                 extra.append({"stem": stem, "frame": frame,
                               "type": os.path.basename(os.path.dirname(png)), "image": png, "json": js})
-        train = train + extra
-        print(f"EXTRA {root}: +{len(extra)} training crops")
+        train = train + extra * rep
+        print(f"EXTRA {root}: +{len(extra)} training crops x{rep}")
     val_items = [it for it in items if it["frame"] in val_f]
     vals = {m: build_val(val_items, m) for m in ("center", "squash")}   # every run is scored both ways
     val = vals["center"]
@@ -130,7 +165,8 @@ def main():
 
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     modes = {"center": 1 - args.squash_weight, "squash": args.squash_weight}
-    ld = DataLoader(EdgeDataset(train, width_modes=modes, lighting=args.lighting), args.batch, shuffle=True, num_workers=args.workers,
+    ld = DataLoader(EdgeDataset(train, width_modes=modes, lighting=args.lighting, texture=args.texture, texture_max=args.texture_max,
+                                    texture_skip=args.texture_skip), args.batch, shuffle=True, num_workers=args.workers,
                     drop_last=True, pin_memory=True, persistent_workers=args.workers > 0,
                     prefetch_factor=4 if args.workers > 0 else None)
     if args.init:
@@ -161,8 +197,13 @@ def main():
             dice = 1 - ((2 * (p * fg).sum((1, 2, 3)) + 1e-6) / ((p + fg).sum((1, 2, 3)) + 1e-6)).mean()
             mse = (((out[:, 1:3] - fl) ** 2) * fg).sum() / (fg.sum() * 2 + 1e-6)
             loss = bce + dice + 2.0 * mse
+            parts = [("bce", bce), ("dice", dice), ("mse", mse)]
+            if args.cldice:
+                cl = soft_cldice(p, fg)
+                loss = loss + args.cldice * cl
+                parts.append(("cldice", cl))
             opt.zero_grad(set_to_none=True); loss.backward(); opt.step(); sch.step()
-            for k, v in (("bce", bce), ("dice", dice), ("mse", mse), ("total", loss)):
+            for k, v in parts + [("total", loss)]:
                 run[k] = run.get(k, 0.0) + float(v)
             if step % args.eval_every == 0 or step == args.steps:
                 n = (step - 1) % args.eval_every + 1
