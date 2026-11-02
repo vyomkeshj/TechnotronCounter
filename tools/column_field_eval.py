@@ -30,10 +30,13 @@ from tools.fragment_eval import HOLDOUT
 FRAMES = os.path.join(paths.DATA, "oct26", "frames")
 
 
-def frames(which: str) -> list[tuple[str, str]]:
+def frames(which: str, root: str = FRAMES, only: tuple = ()) -> list[tuple[str, str]]:
     out = []
-    for js in sorted(glob.glob(os.path.join(FRAMES, "*", "*.json"))):
+    for js in sorted(glob.glob(os.path.join(root, "*", "*.json"))):
         stem = os.path.splitext(os.path.basename(js))[0]
+        if only:
+            if any(o in stem for o in only): out.append((stem, js))
+            continue
         if (which == "holdout") == any(h in stem for h in HOLDOUT):
             out.append((stem, js))
     return out
@@ -57,7 +60,7 @@ def score_frame(sc, stem: str, js: str) -> dict:
     lab, lut = labelme.column_labels(js, hw=img.shape[:2])
     gts = [(i, lab == i, lut[i] < 0.5) for i in np.unique(lab) if i > 0]
     r = {"stem": stem, "good_ok": 0, "good_cropped": 0, "good_missed": 0, "false_good": 0,
-         "ious": [], "counts": []}
+         "ious": [], "counts": [], "all_ious": []}
     used = set()
     for i, gm, is_good in gts:
         best, bj = 0.0, -1
@@ -67,6 +70,7 @@ def score_frame(sc, stem: str, js: str) -> dict:
                 best, bj = v, j
         if best >= 0.5:
             used.add(bj)
+        r["all_ious"].append(best)                         # every labelled column, complete or cropped
         if not is_good:
             if best >= 0.5 and not cols[bj].cropped:
                 r["false_good"] += 1
@@ -89,6 +93,7 @@ def summarise(rows: list[dict]) -> dict:
     counts = [c for r in rows for c in r["counts"]]
     tot.update(labelled_good=labelled_good,
                iou=float(np.mean([v for r in rows for v in r["ious"]])) if counts else 0.0,
+               all_iou=float(np.mean([v for r in rows for v in r["all_ious"]])) if rows else 0.0,
                count_exact=sum(p == g for p, g, _ in counts),
                end_to_end=f"{sum(p == g for p, g, _ in counts)}/{labelled_good + tot['false_good']}")
     return tot
@@ -99,16 +104,18 @@ def main():
     ap.add_argument("--models", default=None)
     ap.add_argument("--sets", default="holdout,train")
     ap.add_argument("--json", default="")
+    ap.add_argument("--frames-dir", default=FRAMES, help="folder of <group>/<frame>.json (default data/oct26/frames)")
+    ap.add_argument("--only", default="", help="comma list of stem substrings: score exactly these frames")
     a = ap.parse_args()
     sc = sheet_counter(a.models)
     out = {}
     for s in a.sets.split(","):
-        rows = [score_frame(sc, stem, js) for stem, js in frames(s)]
+        rows = [score_frame(sc, stem, js) for stem, js in frames(s, a.frames_dir, tuple(x for x in a.only.split(",") if x))]
         m = summarise(rows)
         out[s] = {"summary": m, "rows": rows}
         print(f"{s:8s} labelled complete {m['labelled_good']:2d}: found {m['good_ok']}, called cropped "
               f"{m['good_cropped']}, missed {m['good_missed']} | false complete {m['false_good']} | "
-              f"IoU {m['iou']:.3f} | count exact {m['count_exact']} | end-to-end {m['end_to_end']}")
+              f"IoU {m['iou']:.3f} | all-column IoU {m['all_iou']:.3f} | count exact {m['count_exact']} | end-to-end {m['end_to_end']}")
         for r in rows:
             print(f"    {r['stem']:40s} ok {r['good_ok']} cropped {r['good_cropped']} missed {r['good_missed']} "
                   f"false {r['false_good']} counts {[(p, g) for p, g, _ in r['counts']]}")

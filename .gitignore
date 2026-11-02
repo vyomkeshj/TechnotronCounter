@@ -53,3 +53,9 @@ runs/edges_r3_a/*
 runs/edges_r3_b/*
 !runs/edges_r3_b/last.pt
 !runs/edges_r3_b/audit.json
+!runs/columns_columns_t8_s7/
+runs/columns_columns_t8_s7/*
+!runs/columns_columns_t8_s7/stage2/
+runs/columns_columns_t8_s7/stage2/*
+!runs/columns_columns_t8_s7/stage2/last.pt
+!runs/columns_columns_t8_s7/stage2/audit.json

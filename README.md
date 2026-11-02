@@ -18,20 +18,21 @@ complete columns:
 | type | complete columns counted exactly | expected count |
 |---|---|---|
 | type3 | **126 / 126** | 50 |
-| type10 | **22 / 23** (23 / 23 with 5-frame voting) | 24 |
+| type10 | **23 / 23** | 24 |
 | type2 | **20 / 20** | 50 or 30 (the `_NNpieces_` number in the file name) |
 
-Score 0.994 single frame, 1.000 with 5-frame voting (sheet models `edges_r3_a|b`, 2026-10-23 round 3;
-the one miss, a type10 column end, is flagged uncertain).
+Score 1.000 single frame and with 5-frame voting (column model `columns_t8_s7`, 2026-11-02, which also
+segments type8 columns; sheet models `edges_r3_a|b`, 2026-10-23 round 3). The previous column model
+(`columns_final`) scored 0.994 single / 1.000 voted.
 
 **Self-check:** every counted column is also counted by each edge model alone and from a
 column outline one pixel wider; if any count differs the column is flagged **uncertain** (take
 another photo). On the held-out frames, every column that is NOT flagged is correct:
-type2 16/16, type3 126/126, type10 22/22 (the one error is flagged).
+type2 18/18, type3 126/126, type10 23/23.
 
 Other checks (all reproducible, see "Reproduce the numbers"):
-- **Unseen type2 frames** (108 unlabelled frames, `data/unlabelled`): ~73 % exact per frame,
-  ~75 % with 5-frame voting. Weak spot: the steep S-curve session 133033 (~46 %); about half of its
+- **Unseen type2 frames** (108 unlabelled frames, `data/unlabelled`): ~70 % exact per frame,
+  ~72 % with 5-frame voting (the previous column model: ~73 % / ~75 %; the type8 data costs ~3 points here). Weak spot: the steep S-curve session 133033 (~46 %); about half of its
   errors are column outlines (needs labelled S-curve column frames), half sheets off by one. Type2 on brand-new
   frames is the weak spot, mostly its steep S-curve variant (session 133033).
 - **Broken sheet masks** (`tools/fragment_eval.py`, `tools/fragment_stress.py`; one labelled sheet
@@ -158,7 +159,7 @@ Run everything from this folder with Python 3.10+ (developed on 3.13, Windows, R
 ```bash
 pip install -r requirements.txt           # after installing torch for your CUDA from pytorch.org
 python -m tools.evaluate --vote 5         # the table above; writes runs/_evaluate/columns.csv
-python -m tools.unseen_check              # unseen type2 frames (~73 % / ~75 % voted)
+python -m tools.unseen_check              # unseen type2 frames (~70 % / ~72 % voted)
 python -m tools.fragment_eval runs/edges_r3_a/last.pt runs/edges_r3_b/last.pt   # broken sheet masks
 python -m tools.fragment_stress runs/edges_r3_a/last.pt runs/edges_r3_b/last.pt --sets old_val
 python -m tools.column_field_eval         # column stage on the October field frames
@@ -170,10 +171,10 @@ Expected `tools.evaluate` output with the shipped models:
 
 ```
 type    complete  exact  wrong  cropped  missed  false   score  unflagged correct   voted
-type2         20     20      0        0       0      0   1.000           16/16      1.000
+type2         20     20      0        0       0      0   1.000           18/18      1.000
 type3        126    126      0        0       0      0   1.000          126/126     1.000
-type10        23     22      1        0       0      0   0.957           22/22      1.000
-all          169    168      1        0       0      0   0.994          164/164     1.000
+type10        23     23      0        0       0      0   1.000           23/23      1.000
+all          169    169      0        0       0      0   1.000          167/167     1.000
 ```
 
 ## Reproduce the models
@@ -187,6 +188,12 @@ holds them out, and `--exclude-session 131412` keeps type3's test session out of
 python -m columns.train --name base  --class-override data/columns/relabel_type3_edge_columns.json
 python -m columns.train --name final --class-override data/columns/relabel_type3_edge_columns.json \
     --init runs/columns_base/stage2/last.pt --lr 5e-5 --scale-lo 0.65
+# 2026-11-02 (SHIPPED column model): fine-tune with the October labels (human + model-free
+# auto-labels) and the new type8 labels; type8 frames 018/021 held out for testing
+python -m columns.train --name columns_t8_s7 --seed 7 --class-override data/columns/relabel_type3_edge_columns.json \
+    --init runs/columns_final/stage2/last.pt --lr 5e-5 --scale-lo 0.65 \
+    --extra-data data/oct26/frames:4 --extra-data data/oct26_autolabel/frames:4 \
+    --extra-data data/type8_autolabel/frames:4 --extra-holdout 39pieces_018 --extra-holdout 39pieces_021
 
 # edge models: a seed model, self-labelled crops, then two self-trained models
 python -m edges.train --name seed --seed 7 --exclude-session 131412
@@ -211,13 +218,13 @@ python -m edges.train --name r3_b --seed 7  --init runs/edges_final_b/last.pt --
     --cldice 0.5 --texture 0.3 --texture-max 0.25 --texture-skip type2 --cldice-skip-exempt
 
 # export to the inference package, then score
-python -m common.export_onnx runs/columns_final/stage2/last.pt inference/models/column_flow.onnx
+python -m common.export_onnx runs/columns_columns_t8_s7/stage2/last.pt inference/models/column_flow.onnx
 python -m common.export_onnx runs/edges_r3_a/last.pt inference/models/sheet_edges_a.onnx
 python -m common.export_onnx runs/edges_r3_b/last.pt inference/models/sheet_edges_b.onnx
 python -m tools.evaluate
 ```
 
-The checkpoints this produced are in `runs/` (`columns_base`, `columns_final`,
+The checkpoints this produced are in `runs/` (`columns_base`, `columns_final`, `columns_columns_t8_s7`,
 `edges_seed`, `edges_final_a`, `edges_final_b`, `edges_oct_a`, `edges_oct_b`, `edges_r3_a`, `edges_r3_b`), so any step can start from the shipped
 result. `tools/pseudo_edges.py` regenerates `data/edges_pseudo/` byte-identically from
 `runs/edges_seed`. GPU training is not bit-deterministic (cuDNN, data-loader order): a retrained
