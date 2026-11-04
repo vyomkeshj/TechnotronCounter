@@ -34,7 +34,7 @@ from torch.utils.data import Dataset
 import paths
 from common import labelme, splits
 from common.flows import flow_targets
-from common.imageio import degrade, photometric, to_tensor
+from common.imageio import degrade, photometric, to_tensor, exposure
 
 cv2.setNumThreads(0)
 SIZE = 256
@@ -172,12 +172,15 @@ def load(it: dict) -> tuple[np.ndarray, np.ndarray]:
 class EdgeDataset(Dataset):
     def __init__(self, items: list[dict], repeats: int = 64, width_modes: dict = WIDTH_MODES,
                  lighting: str = "", texture: float = 0.0, texture_max: float = 0.40,
-                 texture_skip: tuple = (), rot_max: float = 6.0):
+                 texture_skip: tuple = (), rot_max: float = 6.0, exposure_p: float = 0.0,
+                 far_p: float = 0.0, far_lo: float = 0.5):
         self.items = items * repeats
         self.modes, self.weights = list(width_modes), list(width_modes.values())
         self.lighting = lighting
         self.texture, self.texture_max, self.texture_skip = texture, texture_max, set(texture_skip)
         self.rot_max = rot_max
+        self.exposure_p = exposure_p              # camera exposure set wrong (common.imageio.exposure)
+        self.far_p, self.far_lo = far_p, far_lo   # camera farther away: whole strip shrunk by far_lo..0.9 (area)
         self._cache: dict = {}
 
     def __len__(self):
@@ -190,7 +193,10 @@ class EdgeDataset(Dataset):
         img, lab = self._cache[it["image"]]
         img, lab = fit_width(img, lab, random.choices(self.modes, self.weights)[0])
         sy, sx = random.uniform(0.5, 3.5), random.uniform(0.8, 1.25)
-        img = cv2.resize(img, None, fx=sx, fy=sy, interpolation=cv2.INTER_LINEAR)
+        if self.far_p and random.random() < self.far_p:
+            d = random.uniform(self.far_lo, 0.9)
+            sy, sx = random.uniform(0.8, 1.25) * d, random.uniform(0.9, 1.1) * d
+        img = cv2.resize(img, None, fx=sx, fy=sy, interpolation=cv2.INTER_AREA if sx * sy < 1 else cv2.INTER_LINEAR)
         lab = cv2.resize(lab, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
         h, w = lab.shape
         wi, wl = np.zeros((SIZE, SIZE, 3), np.uint8), np.zeros((SIZE, SIZE), np.int32)
@@ -210,6 +216,8 @@ class EdgeDataset(Dataset):
             M = cv2.getRotationMatrix2D((SIZE / 2, SIZE / 2), random.uniform(-self.rot_max, self.rot_max), 1.0)
             wi = cv2.warpAffine(wi, M, (SIZE, SIZE), flags=cv2.INTER_LINEAR)
             wl = cv2.warpAffine(wl, M, (SIZE, SIZE), flags=cv2.INTER_NEAREST)
+        if self.exposure_p and random.random() < self.exposure_p:
+            wi = exposure(wi)
         if self.lighting == "v2":
             wi = local_lighting_v2(wi)
         if self.texture and it["type"] not in self.texture_skip and random.random() < self.texture:

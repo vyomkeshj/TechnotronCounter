@@ -163,7 +163,8 @@ python -m tools.unseen_check              # unseen type2 frames (~70 % / ~72 % v
 python -m tools.fragment_eval runs/edges_r3_a/last.pt runs/edges_r3_b/last.pt   # broken sheet masks
 python -m tools.fragment_stress runs/edges_r3_a/last.pt runs/edges_r3_b/last.pt --sets old_val
 python -m tools.column_field_eval         # column stage on the October field frames
-python -m tools.stress                    # robustness table (slow: ~12 perturbations x 40 frames)
+python -m tools.stress                    # robustness table (slow); --only "exposure_-2EV,zoom_0.75,rotate_+10,pitch_10%,..."
+python -m tools.negative_check            # false columns on column-free images (shipped: 82.9 %)
 python -m tools.report                    # one render per held-out frame -> runs/_report/
 ```
 
@@ -194,6 +195,13 @@ python -m columns.train --name columns_t8_s7 --seed 7 --class-override data/colu
     --init runs/columns_final/stage2/last.pt --lr 5e-5 --scale-lo 0.65 \
     --extra-data data/oct26/frames:4 --extra-data data/oct26_autolabel/frames:4 \
     --extra-data data/type8_autolabel/frames:4 --extra-holdout 39pieces_018 --extra-holdout 39pieces_021
+# 2026-11-04 CANDIDATE (not shipped): as columns_t8_s7 plus column-free images taught as "no column",
+# 8000 steps. Needs the negatives (see Data). False columns 82.9 % -> 20.8 %, old test 0.982 / 0.982.
+python -m columns.train --name neg_s7 --seed 7 --steps2 8000 --class-override data/columns/relabel_type3_edge_columns.json \
+    --init runs/columns_final/stage2/last.pt --lr 5e-5 --scale-lo 0.65 \
+    --extra-data data/oct26/frames:4 --extra-data data/oct26_autolabel/frames:4 \
+    --extra-data data/type8_autolabel/frames:4 --extra-holdout 39pieces_018 --extra-holdout 39pieces_021 \
+    --negatives ../datasets/negatives_web/train --neg-frac 0.18 --bg-frac 0.12
 
 # edge models: a seed model, self-labelled crops, then two self-trained models
 python -m edges.train --name seed --seed 7 --exclude-session 131412
@@ -266,6 +274,13 @@ What the recipe steps are for:
   `cropped_column` polygons on the full frame. Sheet edges: one `edge` polygon per sheet on the
   straightened crop (`edges/make_crops.py` makes crops from column labels; `common/labelme.py`
   reads both). type2's 30-piece crops are labelled as thin lines, all others as bands.
+- **Negatives** (column-free images, NOT in this repo: ~1 GB, in `../datasets/negatives_web/`). To rebuild:
+  download `http://data.csail.mit.edu/places/places365/val_256.tar` and
+  `filelist_places365-standard.tar` (same folder), extract to `negatives_web/places/` and
+  `negatives_web/meta/`, then `python -m tools.negative_check --build`. Train set: 90 Places images per
+  scene category (32,850) + photos/patterns; test set: 1 other image per category (365), crops of the
+  HELD-OUT frames away from any column (98), photos/patterns (33). `--bg-frac` crops come from the
+  training frames on the fly. The photo/pattern part is copied from `runs/_wexp/negatives/` if present.
 
 ## Known limits
 
@@ -273,7 +288,10 @@ What the recipe steps are for:
   a column's end, mostly in the steep S-curve variant. More type2 column labels from new capture
   sessions is the fix; nothing tried without new labels helped (below).
 - **Type10** comes from one capture session.
-- **Camera distance**: a 10 % zoom-out still costs type2/type10 columns. Keep the camera fixed.
+- **Camera placement** (`tools.stress`, old test): zoom-out 0.75x 0.805, 0.6x 0.095 (type10 columns
+  missed, type2/type3 sheets merged); roll +-20 deg 0.89; pitch 20 % 0.82; exposure -2.5 / +2 EV
+  0.953 / 0.929. Keep the camera fixed.
+- **Column-free images**: the shipped column model reports a column on 83 % of them (`tools.negative_check`).
 - **Motion blur** can miscount; it is acceptable to fail on blurry frames (take another photo).
 - **Other column types** (1, 4, 5, 7, 8, 9) have no labels; do not trust their counts.
 
@@ -297,6 +315,18 @@ What the recipe steps are for:
 - clDice weight 2.0 (sheets fuse; type2 17/20); strong texture augmentation (p 0.5, 40 %) without
   restriction (unseen type2 65 %).
 - Ranking models by mask IoU: the count is the measure of success; IoU does not rank models.
+- (2026-11-04) Robustness augmentations as a 4000-step low-LR fine-tune (`--exposure 0.4 --wide-p 0.35`
+  for columns, `--exposure 0.4 --far-p 0.3 --rot-max 8` for edges, two seeds): distance 0.6x 0.10 -> 0.35,
+  roll/tilt and exposure unchanged, old test 0.971-0.988. Negatives alone did better (above). Retry the
+  wide/exposure/far augmentations only in a FROM-SCRATCH run.
+- (2026-11-04) Hand-editing weights (closed-form head re-solve, image-level gates): worked on the
+  test sets but is not repeatable; discarded for training-time fixes.
+- (2026-11-04) Correcting the half-pixel label offset (labels are resized nearest = block top-left, images
+  bilinear = block centre, so masks sit ~3.75 px down-right at 1920 px): outlines fit the labels better
+  (columns cut > 5 %: 309 -> 208) but type10 counts +1 on 7-11 of 23: the outline now reaches across the
+  gap into a sliver of the neighbouring column. Needs the end handling fixed first.
+- (2026-11-04) Retrain noise: the shipped column recipe retrained with seed 42 scores 0.988 / 0.994
+  (type2 132812_027 49, type10 014 25). That borderline type2 column end flips on every retrain.
 
 ## Practical notes
 

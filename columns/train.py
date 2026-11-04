@@ -52,7 +52,9 @@ def run_stage(stage, out_dir, args, inst, fg_only, val, init=None):
     steps = args.steps2 if with_cls else args.steps1
     lr = args.lr if getattr(args, "lr", 0.0) else (3e-4 if with_cls else 1e-3)
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
-    ds = ColumnDataset(inst, fg_only)
+    ds = ColumnDataset(inst, fg_only, negatives=args.neg_images, neg_frac=args.neg_frac, bg_frac=args.bg_frac,
+                       exposure_p=args.exposure, wide_p=args.wide_p, wide_scale_lo=args.wide_scale_lo,
+                       wide_rot=args.wide_rot, persp=args.persp)
     ld = DataLoader(ds, args.batch, shuffle=True, num_workers=args.workers, drop_last=True,
                     pin_memory=True, persistent_workers=args.workers > 0,
                     prefetch_factor=4 if args.workers > 0 else None)
@@ -72,7 +74,9 @@ def run_stage(stage, out_dir, args, inst, fg_only, val, init=None):
     sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps)
     os.makedirs(out_dir, exist_ok=True)
     cfg = dict(stage=stage, steps=steps, lr=lr, seed=args.seed, n_inst=len(inst), n_fg_only=len(fg_only),
-               n_val=len(val))
+               n_val=len(val), n_negatives=len(args.neg_images), neg_frac=args.neg_frac, bg_frac=args.bg_frac,
+               exposure=args.exposure, wide_p=args.wide_p, wide_scale_lo=args.wide_scale_lo, wide_rot=args.wide_rot,
+               persp=args.persp)
     tr = Tracker(out_dir, f"columns_{args.name}_s{stage}", MONITOR, GROUP, cfg, steps,
                  hero=("val_deploy/inst_iou", "val_deploy/count_mae"))
 
@@ -179,6 +183,18 @@ def main():
                          "training only, each frame repeated N times")
     ap.add_argument("--extra-holdout", action="append", default=[],
                     help="drop extra-data frames whose name contains this (recipe selection holdout)")
+    ap.add_argument("--negatives", action="append", default=[],
+                    help="folder of column-FREE images (searched recursively), trained as 'no column anywhere'; "
+                         "never put a negative test image here (tools.negative_check)")
+    ap.add_argument("--neg-frac", type=float, default=0.0, help="share of samples drawn from --negatives")
+    ap.add_argument("--bg-frac", type=float, default=0.0,
+                    help="share of samples that are background crops of training frames (no labelled column)")
+    ap.add_argument("--exposure", type=float, default=0.0, help="probability of the camera-exposure augmentation")
+    ap.add_argument("--wide-p", type=float, default=0.0,
+                    help="probability of the WIDE camera placement augmentation (farther, rolled, tilted)")
+    ap.add_argument("--wide-scale-lo", type=float, default=0.45, help="scale lower bound of the wide placement")
+    ap.add_argument("--wide-rot", type=float, default=20.0, help="roll range (+- deg) of the wide placement")
+    ap.add_argument("--persp", type=float, default=0.15, help="max pitch/yaw perspective of the wide placement")
     ap.add_argument("--smoke", action="store_true", help="tiny run to check plumbing")
     args = ap.parse_args()
     os.environ["COLUMN_SCALE_LO"] = str(args.scale_lo)     # DataLoader workers re-import columns.dataset
@@ -211,6 +227,10 @@ def main():
                           "group": os.path.basename(os.path.dirname(js))})
         inst = inst + extra * int(rep or 1)
         print(f"EXTRA {root}: +{len(extra)} frames x{int(rep or 1)}")
+    args.neg_images = sorted(p for d in args.negatives for p in glob.glob(os.path.join(d, "**", "*"), recursive=True)
+                             if p.lower().endswith((".jpg", ".jpeg", ".png")))
+    if args.negatives:
+        print(f"NEGATIVES: {len(args.neg_images)} images, {args.neg_frac:.0%} of samples; background crops {args.bg_frac:.0%}")
     val = build_val([it for it in items if it["stem"] in val_set])
     fg_only = [] if args.no_legacy else legacy_items()
     groups = {}

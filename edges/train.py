@@ -120,6 +120,10 @@ def main():
     ap.add_argument("--cldice-skip-exempt", action="store_true",
                     help="also exempt the --texture-skip crop types from the clDice loss")
     ap.add_argument("--rot-max", type=float, default=6.0, help="rotation augmentation range in degrees (+-)")
+    ap.add_argument("--exposure", type=float, default=0.0, help="probability of the camera-exposure augmentation")
+    ap.add_argument("--far-p", type=float, default=0.0,
+                    help="probability of the farther-camera augmentation (whole strip shrunk, detail lost)")
+    ap.add_argument("--far-lo", type=float, default=0.5, help="smallest shrink factor of --far-p")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
     if args.smoke:
@@ -169,7 +173,8 @@ def main():
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     modes = {"center": 1 - args.squash_weight, "squash": args.squash_weight}
     ld = DataLoader(EdgeDataset(train, width_modes=modes, lighting=args.lighting, texture=args.texture, texture_max=args.texture_max,
-                                    texture_skip=args.texture_skip, rot_max=args.rot_max), args.batch, shuffle=True, num_workers=args.workers,
+                                    texture_skip=args.texture_skip, rot_max=args.rot_max, exposure_p=args.exposure,
+                                    far_p=args.far_p, far_lo=args.far_lo), args.batch, shuffle=True, num_workers=args.workers,
                     drop_last=True, pin_memory=True, persistent_workers=args.workers > 0,
                     prefetch_factor=4 if args.workers > 0 else None)
     if args.init:
@@ -182,7 +187,8 @@ def main():
     sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.steps)
     out_dir = os.path.join(paths.RUNS, f"edges_{args.name}")
     os.makedirs(out_dir, exist_ok=True)
-    cfg = dict(steps=args.steps, seed=args.seed, lighting=args.lighting, n_train=len(train), n_val=len(val), width_modes=modes)
+    cfg = dict(steps=args.steps, seed=args.seed, lighting=args.lighting, n_train=len(train), n_val=len(val), width_modes=modes,
+               rot_max=args.rot_max, exposure=args.exposure, far_p=args.far_p, far_lo=args.far_lo)
     tr = Tracker(out_dir, f"edges_{args.name}", MONITOR, GROUP, cfg, args.steps,
                  hero=("val_all/count_mae", "val_all/inst_iou"))
 

@@ -9,7 +9,10 @@ Rules that matter here:
   `_NNpieces_` number). Mask IoU does not rank models.
 - Score every change with `python -m tools.evaluate` (held-out test, expected 1.000 single / 1.000 voted) AND
   `python -m tools.unseen_check` (unseen type2 frames, ~70 % / ~72 % voted); for sheet-mask quality
-  also `tools.fragment_eval` / `tools.fragment_stress`. A change that only
+  also `tools.fragment_eval` / `tools.fragment_stress`; for column-model changes also
+  `tools.negative_check` (false columns on column-free images) and `tools.stress`. Retraining the
+  shipped column recipe alone costs ~1 borderline type2/type10 column end (0.988), so compare a
+  recipe against a same-seed control, not against the shipped model. A change that only
   improves the 20-column type2 test set is usually a fluke: check the larger unseen set and
   **look at the masks** (`inference/predict.py --save-crops`, `tools/report.py`) before believing it.
 - Never train on the held-out frames (`data/*/splits.json` "val"/"excluded"; keep

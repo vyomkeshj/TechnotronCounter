@@ -57,6 +57,22 @@ def photometric(img: np.ndarray) -> np.ndarray:
     return np.clip(f, 0, 255).astype(np.uint8)
 
 
+def exposure(img: np.ndarray) -> np.ndarray:
+    """Camera exposure set wrong, label-free: scale in LINEAR light by 2^EV and clip (blown highlights lose
+    the grooves between sheets, crushed shadows lose the dark side), back to 8-bit sRGB; dark frames get
+    gain noise (a camera brightens a dark shot by amplifying its noise) and few grey levels. Half the draws
+    are mild (|EV| <= 1), half strong (-2.5..-1 or +1..+2.2). Measured by the exposure rows of tools.stress."""
+    if random.random() < 0.5:
+        ev = random.uniform(-1.0, 1.0)
+    else:
+        ev = random.uniform(-2.5, -1.0) if random.random() < 0.55 else random.uniform(1.0, 2.2)
+    lin = (img.astype(np.float32) / 255.0) ** 2.2 * (2.0 ** ev)
+    out = 255.0 * np.clip(lin, 0, 1) ** (1 / 2.2)
+    if ev < 0:
+        out = out + np.random.normal(0, 1.0 + 2.0 * -ev, img.shape)
+    return np.clip(np.round(out), 0, 255).astype(np.uint8)
+
+
 def degrade(img: np.ndarray) -> np.ndarray:
     """Blur / sensor noise / JPEG."""
     if min(img.shape[:2]) < 16:

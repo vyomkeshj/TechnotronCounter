@@ -33,12 +33,35 @@ def perturbations():
     def scale(f):
         return lambda img: (affine(img, cv2.getRotationMatrix2D((img.shape[1] / 2, img.shape[0] / 2), 0, f)),
                             cv2.getRotationMatrix2D((img.shape[1] / 2, img.shape[0] / 2), 0, f))
+    def tilt(f, axis):
+        """Camera turned about the horizontal (pitch) or vertical (yaw) axis: one image side shrinks by f."""
+        def go(img):
+            H, W = img.shape[:2]
+            src = np.float32([[0, 0], [W, 0], [W, H], [0, H]])
+            d = f * (W if axis == "pitch" else H) / 2
+            dst = (np.float32([[d, 0], [W - d, 0], [W, H], [0, H]]) if axis == "pitch"
+                   else np.float32([[0, d], [W, 0], [W, H], [0, H - d]]))
+            if f < 0:
+                dst = (np.float32([[0, 0], [W, 0], [W + d, H], [-d, H]]) if axis == "pitch"
+                       else np.float32([[0, 0], [W, -d], [W, H + d], [0, H]]))
+            Mp = cv2.getPerspectiveTransform(src, dst)
+            return cv2.warpPerspective(img, Mp, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT), Mp
+        return go
     def photo(fn):
         return lambda img: (fn(img), ident)
     def jpeg(q):
         return lambda img: cv2.imdecode(cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, q])[1], cv2.IMREAD_COLOR)
     rng = np.random.RandomState(0)
+    def exposure(ev):
+        """Camera exposure off by `ev` stops: scale in linear light, clip (blown highlights / crushed shadows),
+        back to 8-bit sRGB (dark frames keep few grey levels)."""
+        def f(x):
+            lin = (x.astype(np.float32) / 255.0) ** 2.2 * (2.0 ** ev)
+            return np.round(255.0 * np.clip(lin, 0, 1) ** (1 / 2.2)).astype(np.uint8)
+        return photo(f)
     return {
+        "exposure -2.5EV": exposure(-2.5), "exposure -2EV": exposure(-2), "exposure -1EV": exposure(-1),
+        "exposure +1EV": exposure(1), "exposure +1.5EV": exposure(1.5), "exposure +2EV": exposure(2),
         "clean": photo(lambda x: x),
         "darker x0.6": photo(lambda x: np.clip(x * 0.6, 0, 255).astype(np.uint8)),
         "brighter x1.4": photo(lambda x: np.clip(x * 1.4, 0, 255).astype(np.uint8)),
@@ -49,6 +72,11 @@ def perturbations():
         "warm cast": photo(lambda x: np.clip(x * np.array([0.85, 1.0, 1.15]), 0, 255).astype(np.uint8)),
         "rotate -4": rot(-4), "rotate +4": rot(4),
         "zoom 0.9": scale(0.9), "zoom 0.95": scale(0.95), "zoom 1.05": scale(1.05), "zoom 1.1": scale(1.1),
+        # wider camera placement (2026-11-03): farther away, rolled, tilted (pitch / yaw = perspective)
+        "zoom 0.6": scale(0.6), "zoom 0.75": scale(0.75), "zoom 1.2": scale(1.2),
+        "rotate -10": rot(-10), "rotate +10": rot(10), "rotate -20": rot(-20), "rotate +20": rot(20),
+        "pitch 10%": tilt(0.10, "pitch"), "pitch -10%": tilt(-0.10, "pitch"), "yaw 10%": tilt(0.10, "yaw"),
+        "yaw -10%": tilt(-0.10, "yaw"), "pitch 20%": tilt(0.20, "pitch"), "yaw 20%": tilt(0.20, "yaw"),
     }
 
 
@@ -79,7 +107,10 @@ def main():
             cols = sc.process(im2, typ, masks=False)
             exp = expected(stem)
             for p in polys:
-                q = p if M is None else (np.c_[p, np.ones(len(p))] @ M.T)
+                q = p if M is None else (cv2.perspectiveTransform(p[None].astype(np.float32), M)[0] if M.shape == (3, 3)
+                                         else np.c_[p, np.ones(len(p))] @ M.T)
+                if M is not None and (q[:, 0].min() < 2 or q[:, 1].min() < 2 or q[:, 0].max() > W - 3 or q[:, 1].max() > H - 3):
+                    continue                                  # column (partly) pushed out of the frame: no longer complete
                 m = np.zeros((H, W), np.uint8)
                 cv2.fillPoly(m, [np.round(q).astype(np.int32)], 1)
                 if m.sum() < 50:
