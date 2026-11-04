@@ -30,6 +30,11 @@ cv2.setNumThreads(0)
 SIZE = 256                                          # model input (letterboxed)
 SCALE_LO = float(os.environ.get("COLUMN_SCALE_LO", "0.8"))  # scale-aug lower bound; columns.train --scale-lo sets it
 WORK_CAP = 640            # decode once at <= 640 px long side; augmentation cost is O(pixels)
+# How LABELS are resized. "nearest" (cv2.INTER_NEAREST) samples each output pixel at the TOP-LEFT of its source
+# block while images are resampled at the block CENTRE, so every model trained with it outputs masks shifted
+# half a 256-px pixel down-right (~3.75 px at 1920 px, measured 2026-11-04). "exact" = INTER_NEAREST_EXACT,
+# centre-aligned. columns.train --label-resize sets it (env var: DataLoader workers re-import this module).
+LABEL_INTERP = cv2.INTER_NEAREST_EXACT if os.environ.get("COLUMN_LABEL_RESIZE", "nearest") == "exact" else cv2.INTER_NEAREST
 
 
 def discover() -> list[dict]:
@@ -75,7 +80,7 @@ def _load_inst(it):
     s = WORK_CAP / max(img.shape[:2])
     if s < 1:
         img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-        lab = cv2.resize(lab, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+        lab = cv2.resize(lab, (img.shape[1], img.shape[0]), interpolation=LABEL_INTERP)
     return img, lab, lut
 
 
@@ -83,11 +88,11 @@ def _load_fg(it):
     img = cv2.imread(it["image"], cv2.IMREAD_COLOR)
     m = cv2.imread(it["mask"], cv2.IMREAD_GRAYSCALE)
     if m.shape[:2] != img.shape[:2]:
-        m = cv2.resize(m, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+        m = cv2.resize(m, (img.shape[1], img.shape[0]), interpolation=LABEL_INTERP)
     s = WORK_CAP / max(img.shape[:2])
     if s < 1:
         img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-        m = cv2.resize(m, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+        m = cv2.resize(m, (img.shape[1], img.shape[0]), interpolation=LABEL_INTERP)
     return img, (m > 127).astype(np.int32), np.zeros(2, np.float32)
 
 
@@ -101,7 +106,8 @@ class ColumnDataset(Dataset):
 
     def __init__(self, inst: list[dict], fg_only: list[dict], oversample_inst: int = 4,
                  negatives: list[str] = (), neg_frac: float = 0.0, bg_frac: float = 0.0, exposure_p: float = 0.0,
-                 wide_p: float = 0.0, wide_scale_lo: float = 0.45, wide_rot: float = 20.0, persp: float = 0.15):
+                 wide_p: float = 0.0, wide_scale_lo: float = 0.45, wide_rot: float = 20.0, persp: float = 0.15,
+                 occlude_p: float = 0.0):
         """negatives: column-free images; neg_frac of the samples are one of them and bg_frac are
         background crops of a training frame that touch no labelled column. Both are trained as
         'no column anywhere' (fg = 0; flow and class losses masked). exposure_p: probability of the
@@ -113,6 +119,7 @@ class ColumnDataset(Dataset):
         self.inst = list(inst)
         self.negatives, self.neg_frac, self.bg_frac, self.exposure_p = list(negatives), neg_frac, bg_frac, exposure_p
         self.wide_p, self.wide_scale_lo, self.wide_rot, self.persp = wide_p, wide_scale_lo, wide_rot, persp
+        self.occlude_p = occlude_p                # in-frame occlusion: a band hides part of a complete column
         self._cache: dict = {}
 
     def __len__(self):
@@ -153,6 +160,63 @@ class ColumnDataset(Dataset):
             img = img[y0:y0 + ch, x0:x0 + cw]
         return img
 
+    def _occlude(self, img, lab, lut):
+        """A band (strap / plank / board: texture from a negative image or plain paint) laid across a COMPLETE
+        column, hiding 15-50 % of its length. Hidden pixels become background, every column the band touches is
+        relabelled CROPPED and its visible pieces become separate instances (a hidden column is not countable)."""
+        ids = [i for i in range(1, int(lab.max()) + 1) if i < len(lut) and lut[i] < 0.5 and (lab == i).sum() > 400]
+        if not ids:
+            return img, lab, lut
+        m = lab == random.choice(ids)
+        ys, xs = np.nonzero(m)
+        P = np.stack([xs, ys], 1).astype(np.float32)
+        mu = P.mean(0)
+        _, _, vt = np.linalg.svd(P - mu, full_matrices=False)
+        u = vt[0]
+        t = (P - mu) @ u
+        L = float(t.max() - t.min())
+        bw = random.uniform(0.15, 0.5) * L
+        c = mu + u * random.uniform(t.min() + bw / 2, t.max() - bw / 2)
+        ang = np.arctan2(u[1], u[0]) + np.pi / 2 + np.radians(random.uniform(-25, 25))
+        d = np.array([np.cos(ang), np.sin(ang)], np.float32)
+        n = np.array([-d[1], d[0]], np.float32)
+        wcol = float(np.ptp((P - mu) @ vt[1]))                 # the column's own width across its long axis
+        half = wcol * random.uniform(0.6, 1.2)                 # the band crosses THIS column, not the whole frame
+        poly = np.stack([c + d * half + n * bw / 2, c - d * half + n * bw / 2, c - d * half - n * bw / 2,
+                         c + d * half - n * bw / 2]).round().astype(np.int32)
+        occ = np.zeros(lab.shape, np.uint8)
+        cv2.fillPoly(occ, [poly], 1)
+        occ = occ > 0
+        if self.negatives and random.random() < 0.6:
+            tex = cv2.imread(random.choice(self.negatives), cv2.IMREAD_COLOR)
+            tex = cv2.resize(tex, (lab.shape[1], lab.shape[0]))
+        else:
+            col = np.array([random.randint(10, 250) for _ in range(3)], np.float32)
+            tex = np.clip(col + np.random.normal(0, random.uniform(2, 20), img.shape), 0, 255).astype(np.uint8)
+        img = img.copy()
+        img[occ] = tex[occ]
+        lut = list(lut)
+        out = lab.copy()
+        out[occ] = 0
+        for j in np.unique(lab[occ]):
+            if j == 0:
+                continue
+            lost = (lab[occ] == j).sum() / (lab == j).sum()
+            if lost < 0.05:
+                continue
+            n_cc, cc = cv2.connectedComponents((out == j).astype(np.uint8))
+            for k in range(1, n_cc):
+                piece = cc == k
+                if piece.sum() < 30:
+                    out[piece] = 0
+                    continue
+                if k > 1:
+                    out[piece] = len(lut)
+                    lut.append(1.0)
+            if j < len(lut):
+                lut[j] = 1.0
+        return img, out, np.array(lut, np.float32)
+
     def __getitem__(self, idx):
         r = random.random()
         neg = None
@@ -166,6 +230,8 @@ class ColumnDataset(Dataset):
         else:
             kind, it = self.items[idx]
             img, lab, lut = self._base(kind, it)
+            if kind == "inst" and self.occlude_p and random.random() < self.occlude_p:
+                img, lab, lut = self._occlude(img, lab, lut)
         ys, xs = np.where(lab > 0)
         if len(ys) > 50 and random.random() < 0.65:
             h, w = lab.shape
@@ -203,7 +269,7 @@ class ColumnDataset(Dataset):
             img = exposure(img)
         img = degrade(photometric(img))
         img, _, _, _ = letterbox(img, SIZE, 0, cv2.INTER_LINEAR)
-        lab, _, _, _ = letterbox(lab, SIZE, 0, cv2.INTER_NEAREST)
+        lab, _, _, _ = letterbox(lab, SIZE, 0, LABEL_INTERP)
         valid = kind == "inst"
         fl = flow_targets(lab) if valid else np.zeros((2, SIZE, SIZE), np.float32)
         cls = lut[np.clip(lab, 0, len(lut) - 1)] if valid else np.zeros((SIZE, SIZE), np.float32)
@@ -220,6 +286,6 @@ def build_val(items: list[dict]) -> list[dict]:
         for i in it.get("flip_good", ()):      # label correction (--class-override): train as complete
             lut[i] = 0.0
         imgL, _, _, _ = letterbox(img, SIZE, 0, cv2.INTER_LINEAR)
-        labL, _, _, _ = letterbox(lab, SIZE, 0, cv2.INTER_NEAREST)
+        labL, _, _, _ = letterbox(lab, SIZE, 0, LABEL_INTERP)
         out.append({**it, "x": to_tensor(imgL), "gt": labL, "lut": lut})
     return out

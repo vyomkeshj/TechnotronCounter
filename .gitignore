@@ -59,3 +59,18 @@ runs/columns_columns_t8_s7/*
 runs/columns_columns_t8_s7/stage2/*
 !runs/columns_columns_t8_s7/stage2/last.pt
 !runs/columns_columns_t8_s7/stage2/audit.json
+# 2026-11-05 shipped: column model + the second sheet-model pair
+!runs/columns_alneg_s7/
+runs/columns_alneg_s7/*
+!runs/columns_alneg_s7/stage2/
+runs/columns_alneg_s7/stage2/*
+!runs/columns_alneg_s7/stage2/last.pt
+!runs/columns_alneg_s7/stage2/audit.json
+!runs/edges_rfg_a/
+runs/edges_rfg_a/*
+!runs/edges_rfg_a/last.pt
+!runs/edges_rfg_a/audit.json
+!runs/edges_rfg_b/
+runs/edges_rfg_b/*
+!runs/edges_rfg_b/last.pt
+!runs/edges_rfg_b/audit.json

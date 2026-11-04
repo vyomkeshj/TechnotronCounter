@@ -170,15 +170,18 @@ bash tools/candidate_check.sh <name> <column .pt> [<edge_a .pt> <edge_b .pt>]   
 python -m tools.report                    # one render per held-out frame -> runs/_report/
 ```
 
-Expected `tools.evaluate` output with the shipped models:
+Expected `tools.evaluate` output with the shipped models (2026-11-05: aligned + negatives column model, four
+averaged sheet models, `MASK_THR = 0.30`; the previous models are in git history, commit fcb5899):
 
 ```
 type    complete  exact  wrong  cropped  missed  false   score  unflagged correct   voted
-type2         20     20      0        0       0      0   1.000           18/18      1.000
-type3        126    126      0        0       0      0   1.000          126/126     1.000
-type10        23     23      0        0       0      0   1.000           23/23      1.000
-all          169    169      0        0       0      0   1.000          167/167     1.000
+type2         20     20      0        0       0      0   1.000           16/16      1.000
+type3        126    126      0        0       0      0   1.000          125/125     1.000
+type10        23     22      1        0       0      0   0.957           21/21      1.000
+all          169    168      1        0       0      0   0.994          162/162     1.000
 ```
+`tools.unseen_check`: type2 84.2 % / 89.1 % voted. `tools.negative_check`: 17.3 % of column-free images.
+(Previous models: 1.000 / 1.000, unseen 70 % / 72 %, negatives 82.9 %.)
 
 ## Reproduce the models
 
@@ -227,10 +230,29 @@ python -m edges.train --name r3_b --seed 7  --init runs/edges_final_b/last.pt --
     --exclude-session 131412 --extra-data data/edges_pseudo --extra-data data/oct26/edges:4 \
     --cldice 0.5 --texture 0.3 --texture-max 0.25 --texture-skip type2 --cldice-skip-exempt
 
-# export to the inference package, then score
-python -m common.export_onnx runs/columns_columns_t8_s7/stage2/last.pt inference/models/column_flow.onnx
+# 2026-11-05 (SHIPPED column model): fine-tune the t8 model with centre-aligned labels and column-free negatives
+# (needs ../datasets/negatives_web, see Data)
+python -m columns.train --name alneg_s7 --seed 7 --init runs/columns_columns_t8_s7/stage2/last.pt --lr 5e-5 --steps2 12000 \
+    --class-override data/columns/relabel_type3_edge_columns.json --scale-lo 0.65 \
+    --extra-data data/oct26/frames:4 --extra-data data/oct26_autolabel/frames:4 \
+    --extra-data data/type8_autolabel/frames:4 --extra-holdout 39pieces_018 --extra-holdout 39pieces_021 \
+    --label-resize exact --negatives ../datasets/negatives_web/train --neg-frac 0.25 --bg-frac 0.15
+# 2026-11-05 (SHIPPED second sheet pair, averaged with r3_a/b): rotation, farther camera, exposure, anti-merge loss
+python -m edges.train --name rfg_a --seed 42 --init runs/edges_final_a/last.pt --lr 1e-4 --steps 8000 \
+    --exclude-session 131412 --extra-data data/edges_pseudo --extra-data data/oct26/edges:4 \
+    --cldice 0.5 --texture 0.3 --texture-max 0.25 --texture-skip type2 --cldice-skip-exempt \
+    --rot-max 12 --far-p 0.3 --exposure 0.3 --groove 1.0
+python -m edges.train --name rfg_b --seed 7 --init runs/edges_final_b/last.pt --lr 1e-4 --steps 8000 \
+    --exclude-session 131412 --extra-data data/edges_pseudo --extra-data data/oct26/edges:4 \
+    --cldice 0.5 --texture 0.3 --texture-max 0.25 --texture-skip type2 --cldice-skip-exempt \
+    --rot-max 12 --far-p 0.3 --exposure 0.3 --groove 1.0
+
+# export to the inference package (the pipeline averages every models/sheet_edges*.onnx), then score
+python -m common.export_onnx runs/columns_alneg_s7/stage2/last.pt inference/models/column_flow.onnx
 python -m common.export_onnx runs/edges_r3_a/last.pt inference/models/sheet_edges_a.onnx
 python -m common.export_onnx runs/edges_r3_b/last.pt inference/models/sheet_edges_b.onnx
+python -m common.export_onnx runs/edges_rfg_a/last.pt inference/models/sheet_edges_c.onnx
+python -m common.export_onnx runs/edges_rfg_b/last.pt inference/models/sheet_edges_d.onnx
 python -m tools.evaluate
 ```
 
@@ -274,6 +296,13 @@ Every candidate is scored with `bash tools/candidate_check.sh <name> runs/column
 
 | run | recipe (+ common flags) | false cols | old test single/voted | unseen t2 complete, voted | Oct sharp MAE | notes |
 |---|---|---|---|---|---|---|
+| **`alneg_s7`** (best, 2026-11-05) | `--seed 7 --init runs/columns_columns_t8_s7/stage2/last.pt --lr 5e-5 --steps2 12000 --label-resize exact --neg-frac 0.25 --bg-frac 0.15` + NEG paths; sheet models `edges_rot12_a/b` | **17.3 %** | **0.994 / 1.000** | 101, **81.2 %** | **0.51** | October exact 42 %; mask offset 1.0-1.2x (shipped 3-14x); weaker: type10 at -2.5 EV 12/23, pitch -10 % 0.888 |
+| `alneg_s42` | as alneg_s7, `--seed 42` | 18.1 % | 0.988 / 1.000 | 102, 82.4 % | 0.47 | replicates alneg_s7 (two-seed rule met); same type10 014 +1 |
+| **CANDIDATE (final 2026-11-05)** `alneg_s7` + 4 sheet models averaged (`edges_r3_a/b` + `edges_rfg_a/b`) | `delivery/_cand_alneg_s7_2026-11-05`; score with `bash tools/candidate_check.sh <name> keep` on a folder holding the 5 ONNX files | 17.3 % | **0.994 / 1.000**, 0 unflagged wrong | 101, **89.1 %** | **0.49** | October exact 46.9 %; pitch -10 % 0.970; zoom 0.75 0.870; S-curve 133746_032 30; -2.5 EV 0.935 (shipped 0.953); sheet masks grown at `MASK_THR = 0.30` in the package (counts unchanged, whole masks 39 -> 52 %) |
+| `alneg_s7` + shipped sheet models | packaged as `delivery/_cand_alneg_s7_2026-11-05` | 17.3 % | 0.988 / 0.994 | 101, **83.2 %** | 0.51 | 1 unflagged miss (type10 140757_014, neighbour sliver); S-curve 133746_032 28 |
+| `alnegocc_s7` | as alneg_s7 + `--occlude 0.3` | 30.2 % | 0.941 / 0.959 | 77, 80.5 % | 0.88 | NEGATIVE: over-calls cropped (type2 4 test columns, side view 0 complete) |
+| **`align_s7`** | `--seed 7 --init runs/columns_columns_t8_s7/stage2/last.pt --lr 5e-5 --steps2 8000 --label-resize exact` | 81.7 % | 0.988 / 0.994 | 106, 78.3 % | 0.95 | labels centre-aligned (half-pixel fix); October exact 36.6 % (type3 sharp 52 %); type8 IoU 0.717; S-curve 133746_032 merges 2 sheets (strip angle) |
+| `t8ft_s7` (control for align) | as align_s7 without `--label-resize exact` | 80.2 % | 0.982 / 0.988 | 106, 69.8 % | 1.38 | October exact 22.4 % |
 | shipped `columns_t8_s7` | chain: base -> final -> t8 fine-tune (above) | 82.9 % | 1.000 / 1.000 | 101, 72.3 % | 1.19 | |
 | `ctrl_s42` | `--seed 42 --init runs/columns_final/stage2/last.pt --lr 5e-5` (= shipped recipe, other seed) | 84.1 % | 0.988 / 0.994 | -, 71.8 % | 1.51 | retrain noise: type2 132812_027, type10 014 |
 | **`neg_s7` (candidate)** | `--seed 7 --init runs/columns_final/stage2/last.pt --lr 5e-5 --steps2 8000` NEG | 20.8 % | 0.982 / 0.982 | 102, 71.6 % | 0.89 | `delivery/_cand_neg_s7_2026-11-04`; 1 unflagged miss (132812_028) |
@@ -353,6 +382,29 @@ Every candidate is scored with `bash tools/candidate_check.sh <name> runs/column
   bilinear = block centre, so masks sit ~3.75 px down-right at 1920 px): outlines fit the labels better
   (columns cut > 5 %: 309 -> 208) but type10 counts +1 on 7-11 of 23: the outline now reaches across the
   gap into a sliver of the neighbouring column. Needs the end handling fixed first.
+- (2026-11-04) Smooth column outline at inference (foreground from the bilinearly scaled-up probability instead
+  of the 7.5 px staircase): old test 1.000 -> 0.947 (type3 118/126, one column no longer straightens),
+  October exact 24 -> 18 %, unseen type2 72 -> 70 %. The downstream stages are tuned to the current outline.
+- (2026-11-04) Measured: the column mask sits SHIFTED DOWN on every type (held-out columns spill 5-15x more
+  past their lower side than their upper side, and miss the upper side): the half-pixel label offset above.
+  The straightener turns columns 180 deg, so this is the slice of the next column at the TOP of the strips.
+- (2026-11-05) In-frame occlusion augmentation for columns (`--occlude 0.3`: a band hides part of a complete
+  column, which is relabelled cropped): type1 side view fixed, but the model over-calls cropped everywhere
+  (old test 0.941, unseen type2 complete 101 -> 77, false columns 17 -> 30 %).
+- (2026-11-05) Anti-merge loss for sheet models (`edges.train --groove 1.0`): merged masks -> 0 and better counts
+  on rotated strips, but every sheet mask thins and breaks (whole masks 65 -> 15 %, S-curve 133746_032 counts 31).
+  Untested at a lower weight (0.2-0.3) -- the next thing to try for merged sheets.
+- (2026-11-05) Sheet-model pairs on top of the aligned column models (`bash tools/candidate_check.sh`):
+  `edges_rot12_a/b` (r3 recipe, `--rot-max 12`): same as r3 within noise (old test 0.994/1.000 vs 0.988/0.994,
+  unseen type2 81 vs 83 %). `edges_rfg_a/b` (+ `--far-p 0.3 --exposure 0.3 --groove 1.0`, 8000 steps): fixes
+  camera tilt (pitch -10 % 0.876 -> 0.970) and helps distance (0.6x 0.10 -> 0.24) but unseen type2 83 -> 74 %
+  and broken masks (groove term). NEXT TO TRY: the rfg recipe WITHOUT `--groove` (or 0.2).
+- (2026-11-05) Averaging SIX sheet models (r3 + rfg + rot12 pairs) instead of the installed four (r3 + rfg): old test
+  0.988 / 0.994, unseen type2 83 % (vs 89 %), type10 at -2.5 EV unchanged (15/23). The four-model set stays.
+- (2026-11-05) Automatic exposure correction at inference (`SHEETCOUNT_AUTO_EXPOSURE=1`, off by default: a frame whose
+  95th-percentile brightness is < 0.45 is brightened in linear light to 0.70): old test at -2.5 EV 0.935 -> 0.994
+  (type10 15 -> 22/23), clean unchanged, but the real October frames get worse (exact 46.9 -> 40.0 %, MAE 3.75 ->
+  5.81: brightened dim/blurred columns are called complete and miscounted). Use only for a known-dark camera.
 - (2026-11-04) Retrain noise: the shipped column recipe retrained with seed 42 scores 0.988 / 0.994
   (type2 132812_027 49, type10 014 25). That borderline type2 column end flips on every retrain.
 

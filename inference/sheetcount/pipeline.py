@@ -35,6 +35,9 @@ BAND_FRAC = 0.50                  # count in the centre 50 % of the column width
 SHEET_MIN_AREA = 6
 REL_FLOOR = 0.25                  # ignore band blobs < 25 % of the crop's median blob
 END_FLOOR = 0.50                  # first/last blob must reach 50 % of the median (drops end slivers)
+AUTO_EXPOSURE = os.environ.get("SHEETCOUNT_AUTO_EXPOSURE", "0") == "1"   # experimental, off: see _auto_exposure
+MASK_THR = 0.30                   # sheet MASKS grow over probability > MASK_THR (the COUNT always uses SHEET_THR);
+                                  # lower = fuller masks, same count (0.30: whole-sheet masks 39 -> 52 %, 0 merges)
 EDGE_INPUT_W, EDGE_PAD = 74, 6    # centre 74 px of the column width, 6 px pad
 GEO_TOL = 6                       # type10 geometric good/cropped tolerance (px)
 
@@ -221,6 +224,8 @@ class SheetCounter:
         """check=True adds a self-check per complete column (c.extra["uncertain"], ["why"]): the
         count is recomputed by each edge model alone and from the outline grown by 1 px; any
         disagreement marks the column uncertain -> the user should take another photo."""
+        if AUTO_EXPOSURE:
+            frame = _auto_exposure(frame)
         cols = self.segment_columns(frame, typ)
         goods = [c for c in cols if not c.cropped]
         crops = self.straighten_columns(frame, [c.polygon for c in goods])
@@ -235,7 +240,8 @@ class SheetCounter:
                 continue
             x = self.edge_input(crop)
             probs = self.sheet_probabilities(x)
-            fg = np.mean(probs, axis=0) > SHEET_THR
+            pm = np.mean(probs, axis=0)
+            fg = pm > SHEET_THR
             c.count, seeds, ab = self.count_sheets(fg)
             c.extra["edge_input"] = x
             if check:
@@ -249,8 +255,20 @@ class SheetCounter:
                         why.append(f"column end ambiguous ({ng} with a 1 px wider outline)")
                 c.extra.update(uncertain=bool(why), why="; ".join(why))
             if masks:
-                c.sheet_masks = self.sheet_masks(fg, seeds, ab)
+                c.sheet_masks = self.sheet_masks(pm > MASK_THR, seeds, ab)
         return cols
+
+
+def _auto_exposure(frame: np.ndarray, dark: float = 0.45, target: float = 0.70) -> np.ndarray:
+    """An under-exposed frame (95th-percentile brightness < `dark`) is brightened in linear light until that
+    percentile reaches `target`; normal and bright frames are returned unchanged."""
+    g = cv2.cvtColor(cv2.resize(frame, (480, 270)), cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+    p95 = float(np.percentile(g, 95))
+    if p95 >= dark or p95 <= 0.02:
+        return frame
+    gain = min(8.0, (target / p95) ** 2.2)
+    lin = (frame.astype(np.float32) / 255.0) ** 2.2 * gain
+    return np.round(255.0 * np.clip(lin, 0, 1) ** (1 / 2.2)).astype(np.uint8)
 
 
 def _polygon(m: np.ndarray) -> np.ndarray:

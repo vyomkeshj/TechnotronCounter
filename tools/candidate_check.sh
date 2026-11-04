@@ -1,6 +1,7 @@
 #!/bin/bash
 # Score one model combination on EVERY check, the way every candidate since 2026-11-04 was compared:
 #   bash tools/candidate_check.sh <name> <column .pt|shipped> [<edge_a .pt|shipped> <edge_b .pt|shipped>]
+#   bash tools/candidate_check.sh <name> keep        # score runs/_candidates/<name>/ exactly as it is
 # Exports to runs/_candidates/<name>/ (a complete models folder) and prints: October pinned field frames,
 # type8 holdout, held-out test (+ 5-frame vote), unseen type2, column-free images, stress rows, type1.
 # Run from training_pipeline/ (python = the Windows interpreter with torch + onnxruntime).
@@ -8,10 +9,13 @@ set -e
 cd "$(dirname "$0")/.."
 PY=${PY:-python.exe}
 N=$1; M=runs/_candidates/$N; mkdir -p $M
+if [ "$2" = keep ]; then :          # score runs/_candidates/<name>/ as it is (e.g. 4 sheet models averaged)
+else
 if [ "$2" = shipped ]; then cp inference/models/column_flow.onnx $M/; else $PY -m common.export_onnx $2 $M/column_flow.onnx >/dev/null; fi
 for s in a b; do v=${3:-shipped}; [ $s = b ] && v=${4:-shipped}
   if [ "$v" = shipped ]; then cp inference/models/sheet_edges_$s.onnx $M/; else $PY -m common.export_onnx $v $M/sheet_edges_$s.onnx >/dev/null; fi
 done
+fi
 md5sum $M/*.onnx
 set +e
 echo "== $N : pinned October set (58 frames, never trained on)"

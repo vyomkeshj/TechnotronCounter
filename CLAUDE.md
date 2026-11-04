@@ -7,8 +7,8 @@ reproduce the numbers and the models, and the list of things that did not work.
 Rules that matter here:
 - The measure of success is the **sheet count** per complete column (type3 50, type10 24, type2 the
   `_NNpieces_` number). Mask IoU does not rank models.
-- Score every change with `python -m tools.evaluate` (held-out test, expected 1.000 single / 1.000 voted) AND
-  `python -m tools.unseen_check` (unseen type2 frames, ~70 % / ~72 % voted); for sheet-mask quality
+- Score every change with `python -m tools.evaluate` (held-out test, expected 0.994 single / 1.000 voted) AND
+  `python -m tools.unseen_check` (unseen type2 frames, ~84 % / ~89 % voted); for sheet-mask quality
   also `tools.fragment_eval` / `tools.fragment_stress`; for column-model changes also
   `tools.negative_check` (false columns on column-free images) and `tools.stress`. Retraining the
   shipped column recipe alone costs ~1 borderline type2/type10 column end (0.988), so compare a

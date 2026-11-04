@@ -9,7 +9,8 @@ Per labelled sheet (human "edge" polygon, model-input coordinates):
   pieces    connected pieces of predicted foreground on the sheet (> 1 = BROKEN: gaps)
   coverage  share of the sheet's labelled pixels predicted as foreground
   whole     one final mask covers >= 80 % of the sheet and no other mask >= 10 %
-Per strip: count error vs the number of labelled sheets.
+Per strip: count error vs the number of labelled sheets; MERGED = final masks that hold two or more labelled
+sheets (each >= 25 % of the mask), the "two edges in one mask" error.
 
 Sets: new_holdout / new_train = data/oct26/edges split by HOLDOUT below (the holdout is
 only for choosing the recipe; the final model trains on all of oct26), old_val = the pinned
@@ -70,9 +71,17 @@ def prob(nets, img):
     return np.mean([torch.sigmoid(n(x)[0, 0]).cpu().numpy()[:h, :w] for n in nets], axis=0)
 
 
+ROTATE = 0.0
+
+
 def score_strip(nets, it):
     img = cv2.imread(it["image"])
     lab = labelme.edge_labels(it["json"])
+    if ROTATE:   # a strip straightened at a slightly wrong angle (what a shifted column outline does)
+        h, w = lab.shape
+        M = cv2.getRotationMatrix2D((w / 2, h / 2), ROTATE, 1.0)
+        img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR)
+        lab = cv2.warpAffine(lab.astype(np.int32), M, (w, h), flags=cv2.INTER_NEAREST)
     img, lab = fit_width(*tight(img, lab), "center")
     return score_arrays(nets, it, img, lab)
 
@@ -93,8 +102,15 @@ def score_arrays(nets, it, img, lab):
         whole = bool(share and share[0] >= 0.8 and (len(share) < 2 or share[1] < 0.1))
         sheets.append({"pieces": pieces, "coverage": float((fg & g).sum() / g.sum()), "whole": whole})
     n_gt = len(sheets)
+    merged = 0                                   # final masks that hold >= 2 labelled sheets (>= 25 % of the mask each)
+    for k in np.unique(masks):
+        if k == 0:
+            continue
+        mk = masks == k
+        ids, cnt = np.unique(lab[mk], return_counts=True)
+        merged += int(sum(1 for i, c in zip(ids, cnt) if i > 0 and c >= 0.25 * mk.sum()) >= 2)
     return {"stem": it["stem"], "group": it["group"], "count": count, "n_gt": n_gt,
-            "count_err": count - n_gt, "sheets": sheets}
+            "count_err": count - n_gt, "sheets": sheets, "n_masks": int(len(np.unique(masks)) - 1), "merged": merged}
 
 
 def summarise(rows):
@@ -104,7 +120,8 @@ def summarise(rows):
             "broken_pct": 100 * float(np.mean([s["pieces"] > 1 for s in sh])),
             "missed_pct": 100 * float(np.mean([s["pieces"] == 0 for s in sh])),
             "coverage": float(np.mean([s["coverage"] for s in sh])),
-            "whole_pct": 100 * float(np.mean([s["whole"] for s in sh]))}
+            "whole_pct": 100 * float(np.mean([s["whole"] for s in sh])),
+            "merged_pct": 100 * sum(r["merged"] for r in rows) / max(1, sum(r["n_masks"] for r in rows))}
 
 
 def main():
@@ -112,7 +129,11 @@ def main():
     ap.add_argument("ckpts", nargs="+")
     ap.add_argument("--sets", default="new_holdout,old_val")
     ap.add_argument("--json", default="")
+    ap.add_argument("--rotate", type=float, default=0.0, help="rotate every strip by this many degrees first "
+                    "(stress: a strip straightened at a slightly wrong angle merges bent sheets)")
     a = ap.parse_args()
+    global ROTATE
+    ROTATE = a.rotate
     nets = [load_checkpoint(c, DEVICE) for c in a.ckpts]
     out = {}
     for s in a.sets.split(","):
@@ -122,7 +143,7 @@ def main():
         m = out[s]["summary"]
         print(f"{s:12s} strips {m['strips']:3d} sheets {m['sheets']:5d} | count exact {m['count_exact']}/{m['strips']} "
               f"MAE {m['count_mae']:.2f} | broken {m['broken_pct']:.1f}% missed {m['missed_pct']:.1f}% "
-              f"coverage {m['coverage']:.3f} | whole masks {m['whole_pct']:.1f}%")
+              f"coverage {m['coverage']:.3f} | whole masks {m['whole_pct']:.1f}% | MERGED masks {m['merged_pct']:.2f}%")
         if s != "old_val":
             for r in rows:
                 b = sum(x["pieces"] > 1 for x in r["sheets"])

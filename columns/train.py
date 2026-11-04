@@ -24,6 +24,7 @@ import json
 import os
 import random
 
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -54,7 +55,7 @@ def run_stage(stage, out_dir, args, inst, fg_only, val, init=None):
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     ds = ColumnDataset(inst, fg_only, negatives=args.neg_images, neg_frac=args.neg_frac, bg_frac=args.bg_frac,
                        exposure_p=args.exposure, wide_p=args.wide_p, wide_scale_lo=args.wide_scale_lo,
-                       wide_rot=args.wide_rot, persp=args.persp)
+                       wide_rot=args.wide_rot, persp=args.persp, occlude_p=args.occlude)
     ld = DataLoader(ds, args.batch, shuffle=True, num_workers=args.workers, drop_last=True,
                     pin_memory=True, persistent_workers=args.workers > 0,
                     prefetch_factor=4 if args.workers > 0 else None)
@@ -76,7 +77,7 @@ def run_stage(stage, out_dir, args, inst, fg_only, val, init=None):
     cfg = dict(stage=stage, steps=steps, lr=lr, seed=args.seed, n_inst=len(inst), n_fg_only=len(fg_only),
                n_val=len(val), n_negatives=len(args.neg_images), neg_frac=args.neg_frac, bg_frac=args.bg_frac,
                exposure=args.exposure, wide_p=args.wide_p, wide_scale_lo=args.wide_scale_lo, wide_rot=args.wide_rot,
-               persp=args.persp, oversample=args.oversample)
+               persp=args.persp, oversample=args.oversample, label_resize=args.label_resize, occlude=args.occlude)
     tr = Tracker(out_dir, f"columns_{args.name}_s{stage}", MONITOR, GROUP, cfg, steps,
                  hero=("val_deploy/inst_iou", "val_deploy/count_mae"))
 
@@ -197,11 +198,17 @@ def main():
     ap.add_argument("--persp", type=float, default=0.15, help="max pitch/yaw perspective of the wide placement")
     ap.add_argument("--oversample", default="", help="comma list group=N, e.g. type2=2: training frames of that "
                     "group are repeated N times (each repeat gets its own random augmentation)")
+    ap.add_argument("--occlude", type=float, default=0.0, help="probability of the in-frame occlusion augmentation "
+                    "(a band hides part of a complete column -> relabelled cropped)")
+    ap.add_argument("--label-resize", default="nearest", choices=["nearest", "exact"],
+                    help="label resizing: 'exact' = centre-aligned (fixes the half-pixel down-right mask offset)")
     ap.add_argument("--smoke", action="store_true", help="tiny run to check plumbing")
     args = ap.parse_args()
     os.environ["COLUMN_SCALE_LO"] = str(args.scale_lo)     # DataLoader workers re-import columns.dataset
+    os.environ["COLUMN_LABEL_RESIZE"] = args.label_resize
     import columns.dataset as _cd
     _cd.SCALE_LO = args.scale_lo
+    _cd.LABEL_INTERP = cv2.INTER_NEAREST_EXACT if args.label_resize == "exact" else cv2.INTER_NEAREST
     if args.smoke:
         args.steps1, args.steps2, args.eval_every, args.workers = 60, 40, 30, 2
 

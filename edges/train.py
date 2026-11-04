@@ -51,6 +51,17 @@ def _soft_skel(x: torch.Tensor, iters: int) -> torch.Tensor:
     return skel
 
 
+def groove_mask(fg: torch.Tensor, reach: int = 7) -> torch.Tensor:
+    """Background pixels with sheet foreground within `reach` px ABOVE and BELOW (the strip is upright, so
+    sheets stack vertically): the gap between two neighbouring sheets. A merged mask paints over it."""
+    above = torch.zeros_like(fg)
+    below = torch.zeros_like(fg)
+    for d in range(1, reach + 1):
+        above[:, :, d:] = torch.maximum(above[:, :, d:], fg[:, :, :-d])
+        below[:, :, :-d] = torch.maximum(below[:, :, :-d], fg[:, :, d:])
+    return (1 - fg) * above * below
+
+
 def soft_cldice(p: torch.Tensor, gt: torch.Tensor, iters: int = 5) -> torch.Tensor:
     """1 - clDice: penalises predicted sheets whose centre-line breaks (topology), which plain
     Dice barely notices because a gap is only a few pixels."""
@@ -121,6 +132,8 @@ def main():
                     help="also exempt the --texture-skip crop types from the clDice loss")
     ap.add_argument("--rot-max", type=float, default=6.0, help="rotation augmentation range in degrees (+-)")
     ap.add_argument("--exposure", type=float, default=0.0, help="probability of the camera-exposure augmentation")
+    ap.add_argument("--groove", type=float, default=0.0,
+                    help="weight of the anti-merge loss: BCE on background pixels between two neighbouring sheets")
     ap.add_argument("--far-p", type=float, default=0.0,
                     help="probability of the farther-camera augmentation (whole strip shrunk, detail lost)")
     ap.add_argument("--far-lo", type=float, default=0.5, help="smallest shrink factor of --far-p")
@@ -188,7 +201,7 @@ def main():
     out_dir = os.path.join(paths.RUNS, f"edges_{args.name}")
     os.makedirs(out_dir, exist_ok=True)
     cfg = dict(steps=args.steps, seed=args.seed, lighting=args.lighting, n_train=len(train), n_val=len(val), width_modes=modes,
-               rot_max=args.rot_max, exposure=args.exposure, far_p=args.far_p, far_lo=args.far_lo)
+               rot_max=args.rot_max, exposure=args.exposure, far_p=args.far_p, far_lo=args.far_lo, groove=args.groove)
     tr = Tracker(out_dir, f"edges_{args.name}", MONITOR, GROUP, cfg, args.steps,
                  hero=("val_all/count_mae", "val_all/inst_iou"))
 
@@ -207,6 +220,11 @@ def main():
             mse = (((out[:, 1:3] - fl) ** 2) * fg).sum() / (fg.sum() * 2 + 1e-6)
             loss = bce + dice + 2.0 * mse
             parts = [("bce", bce), ("dice", dice), ("mse", mse)]
+            if args.groove:                      # anti-merge: extra BCE on the gaps between neighbouring sheets
+                g = groove_mask(fg)
+                gb = (F.binary_cross_entropy_with_logits(out[:, :1], fg, reduction="none") * g).sum() / (g.sum() + 1e-6)
+                loss = loss + args.groove * gb
+                parts.append(("groove", gb))
             if args.cldice:
                 k = keep > 0.5 if args.cldice_skip_exempt else torch.ones_like(keep, dtype=torch.bool)
                 cl = soft_cldice(p[k], fg[k]) if k.any() else p.sum() * 0
