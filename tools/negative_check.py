@@ -30,6 +30,49 @@ from tools.evalkit import sheet_counter
 NEG = os.path.join(os.path.dirname(paths.ROOT), "datasets", "negatives_web")
 
 
+def misc_regenerate(rnd):
+    """60 synthetic patterns (stripes at any angle, checkers, gratings, noise, gradients, blurred blobs; the
+    repetitive ones are what fool a sheet-column model) + the scikit-image sample photos; 1 in 3 to test."""
+    rng = np.random.default_rng(0)
+    out = []
+    for i in range(60):
+        h, w = rng.integers(300, 700), rng.integers(300, 900)
+        kind = ("stripes", "checker", "grating", "noise", "gradient", "blobs")[i % 6]
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        if kind in ("stripes", "grating"):
+            a, p = rng.uniform(0, np.pi), rng.uniform(6, 30)
+            t = np.sin((xx * np.cos(a) + yy * np.sin(a)) * 2 * np.pi / p)
+            g = (t > 0).astype(np.float32) if kind == "stripes" else (t + 1) / 2
+        elif kind == "checker":
+            p = int(rng.integers(8, 60))
+            g = (((yy // p) + (xx // p)) % 2).astype(np.float32)
+        elif kind == "noise":
+            g = cv2.GaussianBlur(rng.random((h, w)).astype(np.float32), (0, 0), float(rng.uniform(0.5, 4)))
+        elif kind == "gradient":
+            g = (xx / w * rng.uniform(0.3, 1) + yy / h * rng.uniform(0, 0.7))
+        else:
+            g = cv2.GaussianBlur(rng.random((h // 16 + 1, w // 16 + 1)).astype(np.float32), (0, 0), 1)
+            g = cv2.resize(g, (int(w), int(h)))
+        g = (g - g.min()) / (np.ptp(g) + 1e-6)
+        col = np.dstack([g * rng.uniform(0.3, 1) + rng.uniform(0, 0.3) for _ in range(3)])
+        out.append((f"syn_{kind}_{i}.jpg", np.clip(col * 255, 0, 255).astype(np.uint8)))
+    try:
+        from skimage import data as skd
+        for name in ("astronaut", "coffee", "chelsea", "rocket", "camera", "coins", "brick", "grass", "gravel",
+                     "rocket", "page", "text", "moon", "horse", "retina", "hubble_deep_field", "immunohistochemistry"):
+            try:
+                im = getattr(skd, name)()
+            except Exception:
+                continue
+            im = np.dstack([im] * 3) if im.ndim == 2 else im[..., :3]
+            out.append((f"sk_{name}.jpg", cv2.cvtColor(im.astype(np.uint8), cv2.COLOR_RGB2BGR)))
+    except ImportError:
+        print("scikit-image not installed: misc set is synthetic only")
+    for k, (name, img) in enumerate(out):
+        split = "test" if k % 3 == 0 else "train"
+        cv2.imwrite(os.path.join(NEG, split, "misc", name), img)
+
+
 def build():
     from columns.dataset import discover, sync_split
     from common import labelme
@@ -49,10 +92,14 @@ def build():
         shutil.copy(os.path.join(src, names[0]), os.path.join(NEG, "test", "places", names[0]))
         for n in names[10:]:                          # 1..9 kept out of both (spare test pool)
             shutil.copy(os.path.join(src, n), os.path.join(NEG, "train", "places", n))
-    for split, old in (("train", "fit"), ("test", "test")):    # earlier hand-made set, minus its frame crops
-        for p in glob.glob(os.path.join(paths.RUNS, "_wexp", "negatives", old, "*.jpg")):
-            if not os.path.basename(p).startswith("bg_"):
-                shutil.copy(p, os.path.join(NEG, split, "misc", os.path.basename(p)))
+    old_dir = os.path.join(paths.RUNS, "_wexp", "negatives")
+    if os.path.isdir(old_dir):     # the original 2026-11-04 set (its frame crops dropped): exact same numbers
+        for split, old in (("train", "fit"), ("test", "test")):
+            for p in glob.glob(os.path.join(old_dir, old, "*.jpg")):
+                if not os.path.basename(p).startswith("bg_"):
+                    shutil.copy(p, os.path.join(NEG, split, "misc", os.path.basename(p)))
+    else:                          # regenerate: synthetic patterns + scikit-image samples (no wallpaper photos)
+        misc_regenerate(rnd)
     items = discover()
     val = set(sync_split(items, write=False)["val"])
     frames = [(it["image"], it["json"], it["stem"]) for it in items if it["stem"] in val]

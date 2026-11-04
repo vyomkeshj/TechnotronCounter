@@ -165,6 +165,8 @@ python -m tools.fragment_stress runs/edges_r3_a/last.pt runs/edges_r3_b/last.pt 
 python -m tools.column_field_eval         # column stage on the October field frames
 python -m tools.stress                    # robustness table (slow); --only "exposure_-2EV,zoom_0.75,rotate_+10,pitch_10%,..."
 python -m tools.negative_check            # false columns on column-free images (shipped: 82.9 %)
+python -m tools.type1_check               # type1 June frames (unlabelled): counts vs file name
+bash tools/candidate_check.sh <name> <column .pt> [<edge_a .pt> <edge_b .pt>]   # ALL of the above for one candidate
 python -m tools.report                    # one render per held-out frame -> runs/_report/
 ```
 
@@ -261,6 +263,26 @@ What the recipe steps are for:
   Exempting type2 fixed the 30-piece undercounts (session 133746 12 -> 15-16 of 18, reproduced with
   a second seed pair); the half learning rate keeps the old test at 0.994 (lr 2e-4: 0.982-0.988).
 
+## Candidate log (column model, newest first)
+
+Every candidate is scored with `bash tools/candidate_check.sh <name> runs/columns_<name>/stage2/last.pt`
+(shipped sheet models) and compared with a SAME-RECIPE control, never only with the shipped model
+(retrain noise alone costs ~1 borderline column end). Common flags of every run below:
+`--class-override data/columns/relabel_type3_edge_columns.json --scale-lo 0.65 --extra-data data/oct26/frames:4
+--extra-data data/oct26_autolabel/frames:4 --extra-data data/type8_autolabel/frames:4 --extra-holdout 39pieces_018
+--extra-holdout 39pieces_021`; NEG = `--negatives ../datasets/negatives_web/train --neg-frac 0.18 --bg-frac 0.12`.
+
+| run | recipe (+ common flags) | false cols | old test single/voted | unseen t2 complete, voted | Oct sharp MAE | notes |
+|---|---|---|---|---|---|---|
+| shipped `columns_t8_s7` | chain: base -> final -> t8 fine-tune (above) | 82.9 % | 1.000 / 1.000 | 101, 72.3 % | 1.19 | |
+| `ctrl_s42` | `--seed 42 --init runs/columns_final/stage2/last.pt --lr 5e-5` (= shipped recipe, other seed) | 84.1 % | 0.988 / 0.994 | -, 71.8 % | 1.51 | retrain noise: type2 132812_027, type10 014 |
+| **`neg_s7` (candidate)** | `--seed 7 --init runs/columns_final/stage2/last.pt --lr 5e-5 --steps2 8000` NEG | 20.8 % | 0.982 / 0.982 | 102, 71.6 % | 0.89 | `delivery/_cand_neg_s7_2026-11-04`; 1 unflagged miss (132812_028) |
+| `neg_s42` | as neg_s7, `--seed 42` | 23.2 % | 0.971 / 0.976 | -, 69.9 % | 1.00 | |
+| `rob_s7` / `rob_s42` | as ctrl, NEG at 0.15/0.10, `--exposure 0.4 --wide-p 0.35` (4000 steps) | 40.9 / 36.1 % | 0.976-0.982 | -, 71.6-74.0 % | 1.19 / 1.32 | little robustness gain |
+| `scratch_ctrl_s7` | `--seed 7`, NO --init (stage 1 12k + stage 2 4k) | 87.5 % | 0.988 / 0.988 | 88, 69.3 % | 2.84 | one run < the 3-step chain |
+| `scratch_rob_s7` | as scratch_ctrl + NEG `--exposure 0.4 --wide-p 0.35` | **7.9 %** | 0.988 / 0.994 | 81, 56.8 % | 3.40 | roll/tilt/zoom 0.75 +0.04..0.09 vs its control; type2 called cropped more; type1 56/72 exact |
+| `ftA_s7` / `ftB_s7` | `--seed 7 --init runs/columns_scratch_rob_s7/stage2/last.pt --lr 5e-5 --steps2 8000` NEG `--wide-p 0.15` (B: `--oversample type2=2`) | | | | | running 2026-11-04 |
+
 ## Data
 
 - **Expected counts** (the ground truth for counting): type3 = 50, type10 = 24, type2 = the
@@ -280,7 +302,13 @@ What the recipe steps are for:
   `negatives_web/meta/`, then `python -m tools.negative_check --build`. Train set: 90 Places images per
   scene category (32,850) + photos/patterns; test set: 1 other image per category (365), crops of the
   HELD-OUT frames away from any column (98), photos/patterns (33). `--bg-frac` crops come from the
-  training frames on the fly. The photo/pattern part is copied from `runs/_wexp/negatives/` if present.
+  training frames on the fly. The photo/pattern part is copied from `runs/_wexp/negatives/` if present
+  (the exact set behind the numbers here, incl. ~27 local wallpaper photos); otherwise `--build`
+  regenerates synthetic patterns + scikit-image samples, which changes only the small "misc" row.
+- **October test frames** for `tools.oct_field_count --pin`: `data/oct26/pinned_test_frames.json` (58).
+- **Type1 frames** (no labels yet): `../datasets/quality_dataset_20260916/quality_dataset/type1_quality/passed/`.
+  Three kinds: side view 134502 (every column cut off: target is NO complete column), 50 pieces
+  (141559, 141837, 141934), tilted 30 pieces (142210).
 
 ## Known limits
 

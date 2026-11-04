@@ -76,7 +76,7 @@ def run_stage(stage, out_dir, args, inst, fg_only, val, init=None):
     cfg = dict(stage=stage, steps=steps, lr=lr, seed=args.seed, n_inst=len(inst), n_fg_only=len(fg_only),
                n_val=len(val), n_negatives=len(args.neg_images), neg_frac=args.neg_frac, bg_frac=args.bg_frac,
                exposure=args.exposure, wide_p=args.wide_p, wide_scale_lo=args.wide_scale_lo, wide_rot=args.wide_rot,
-               persp=args.persp)
+               persp=args.persp, oversample=args.oversample)
     tr = Tracker(out_dir, f"columns_{args.name}_s{stage}", MONITOR, GROUP, cfg, steps,
                  hero=("val_deploy/inst_iou", "val_deploy/count_mae"))
 
@@ -195,6 +195,8 @@ def main():
     ap.add_argument("--wide-scale-lo", type=float, default=0.45, help="scale lower bound of the wide placement")
     ap.add_argument("--wide-rot", type=float, default=20.0, help="roll range (+- deg) of the wide placement")
     ap.add_argument("--persp", type=float, default=0.15, help="max pitch/yaw perspective of the wide placement")
+    ap.add_argument("--oversample", default="", help="comma list group=N, e.g. type2=2: training frames of that "
+                    "group are repeated N times (each repeat gets its own random augmentation)")
     ap.add_argument("--smoke", action="store_true", help="tiny run to check plumbing")
     args = ap.parse_args()
     os.environ["COLUMN_SCALE_LO"] = str(args.scale_lo)     # DataLoader workers re-import columns.dataset
@@ -227,6 +229,11 @@ def main():
                           "group": os.path.basename(os.path.dirname(js))})
         inst = inst + extra * int(rep or 1)
         print(f"EXTRA {root}: +{len(extra)} frames x{int(rep or 1)}")
+    if args.oversample:
+        for g, n in (x.split("=") for x in args.oversample.split(",")):
+            more = [it for it in inst if it["group"] == g]
+            inst = inst + more * (int(n) - 1)
+            print(f"OVERSAMPLE {g}: {len(more)} frames x{n}")
     args.neg_images = sorted(p for d in args.negatives for p in glob.glob(os.path.join(d, "**", "*"), recursive=True)
                              if p.lower().endswith((".jpg", ".jpeg", ".png")))
     if args.negatives:

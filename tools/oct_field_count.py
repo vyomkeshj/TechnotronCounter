@@ -89,7 +89,7 @@ def main():
         for c in cols:
             if c.cropped:
                 continue
-            err = c.count - exp
+            err = (c.count or 0) - exp                 # count None = the strip could not be cut: a miss
             rows.append((s, typ, exp, c.count, err, round(sh, 2)))
             agg[typ].append((err, sh >= 0.35))
     os.makedirs(os.path.join(paths.RUNS, "_oct_field"), exist_ok=True)
