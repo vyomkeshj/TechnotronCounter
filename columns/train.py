@@ -77,7 +77,8 @@ def run_stage(stage, out_dir, args, inst, fg_only, val, init=None):
     cfg = dict(stage=stage, steps=steps, lr=lr, seed=args.seed, n_inst=len(inst), n_fg_only=len(fg_only),
                n_val=len(val), n_negatives=len(args.neg_images), neg_frac=args.neg_frac, bg_frac=args.bg_frac,
                exposure=args.exposure, wide_p=args.wide_p, wide_scale_lo=args.wide_scale_lo, wide_rot=args.wide_rot,
-               persp=args.persp, oversample=args.oversample, label_resize=args.label_resize, occlude=args.occlude)
+               persp=args.persp, oversample=args.oversample, label_resize=args.label_resize, occlude=args.occlude,
+               all_data=args.all_data)
     tr = Tracker(out_dir, f"columns_{args.name}_s{stage}", MONITOR, GROUP, cfg, steps,
                  hero=("val_deploy/inst_iou", "val_deploy/count_mae"))
 
@@ -200,6 +201,8 @@ def main():
                     "group are repeated N times (each repeat gets its own random augmentation)")
     ap.add_argument("--occlude", type=float, default=0.0, help="probability of the in-frame occlusion augmentation "
                     "(a band hides part of a complete column -> relabelled cropped)")
+    ap.add_argument("--all-data", action="store_true", help="DEPLOY variant: also train on the held-out test "
+                    "frames (tools.evaluate is then meaningless for this model)")
     ap.add_argument("--label-resize", default="nearest", choices=["nearest", "exact"],
                     help="label resizing: 'exact' = centre-aligned (fixes the half-pixel down-right mask offset)")
     ap.add_argument("--smoke", action="store_true", help="tiny run to check plumbing")
@@ -222,6 +225,9 @@ def main():
     split = sync_split(items)
     val_set, exc = set(split["val"]), set(split["excluded"])
     inst = [it for it in items if it["stem"] not in val_set and it["stem"] not in exc]
+    if args.all_data:                       # deploy variant: the held-out frames are TRAINED ON too (val is then
+        inst = list(items)                  # in-sample; score with unseen frames only, never with tools.evaluate)
+        print(f"ALL DATA: {len(inst)} labelled frames incl. {len(val_set)} held-out + {len(exc)} excluded")
     if args.limit_per_type:
         inst = limit_per_type(inst, dict((k, int(v)) for k, v in (x.split("=") for x in args.limit_per_type.split(","))))
     for spec in args.extra_data:

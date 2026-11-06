@@ -10,6 +10,11 @@ photo ──► 1. column segmenter ──► 2. straightener ──► 3. edge 
                                     strip)              models averaged)          + self-check
 ```
 
+> **Branch `alldata-2026-11-06`:** `inference/models` holds the ALL-DATA deploy variant (same recipes as main,
+> trained on every labelled frame incl. the held-out test sessions; `--all-data`). `tools.evaluate` is therefore
+> in-sample on this branch and means nothing; compare on unseen data (candidate log) or at the site.
+> `main` keeps the measured 2026-11-05 models.
+
 ## Results (reproduce with `python -m tools.evaluate`)
 
 40 held-out frames from capture sessions that **neither model ever trained on**, 169 labelled
@@ -297,6 +302,7 @@ Every candidate is scored with `bash tools/candidate_check.sh <name> runs/column
 | run | recipe (+ common flags) | false cols | old test single/voted | unseen t2 complete, voted | Oct sharp MAE | notes |
 |---|---|---|---|---|---|---|
 | **`alneg_s7`** (best, 2026-11-05) | `--seed 7 --init runs/columns_columns_t8_s7/stage2/last.pt --lr 5e-5 --steps2 12000 --label-resize exact --neg-frac 0.25 --bg-frac 0.15` + NEG paths; sheet models `edges_rot12_a/b` | **17.3 %** | **0.994 / 1.000** | 101, **81.2 %** | **0.51** | October exact 42 %; mask offset 1.0-1.2x (shipped 3-14x); weaker: type10 at -2.5 EV 12/23, pitch -10 % 0.888 |
+| `all_cols` + `edges_all_r3_a/b` + `edges_all_rfg_a/b` (ALL-DATA deploy variant, 2026-11-06) | shipped recipes + `--all-data` in both trainers, type8 018/021 included; `delivery/column_sheet_counter_2026-11-06_alldata` | 16.9 % | (in-sample) | 101, 84.2 % | 0.59 | unseen data only: slightly worse than shipped on unseen type2 (89.1 %) and October, better type1 MAE (0.85 vs 1.51); for the site test |
 | `alneg_s42` | as alneg_s7, `--seed 42` | 18.1 % | 0.988 / 1.000 | 102, 82.4 % | 0.47 | replicates alneg_s7 (two-seed rule met); same type10 014 +1 |
 | **CANDIDATE (final 2026-11-05)** `alneg_s7` + 4 sheet models averaged (`edges_r3_a/b` + `edges_rfg_a/b`) | `delivery/_cand_alneg_s7_2026-11-05`; score with `bash tools/candidate_check.sh <name> keep` on a folder holding the 5 ONNX files | 17.3 % | **0.994 / 1.000**, 0 unflagged wrong | 101, **89.1 %** | **0.49** | October exact 46.9 %; pitch -10 % 0.970; zoom 0.75 0.870; S-curve 133746_032 30; -2.5 EV 0.935 (shipped 0.953); sheet masks grown at `MASK_THR = 0.30` in the package (counts unchanged, whole masks 39 -> 52 %) |
 | `alneg_s7` + shipped sheet models | packaged as `delivery/_cand_alneg_s7_2026-11-05` | 17.3 % | 0.988 / 0.994 | 101, **83.2 %** | 0.51 | 1 unflagged miss (type10 140757_014, neighbour sliver); S-curve 133746_032 28 |

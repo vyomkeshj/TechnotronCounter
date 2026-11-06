@@ -132,6 +132,7 @@ def main():
                     help="also exempt the --texture-skip crop types from the clDice loss")
     ap.add_argument("--rot-max", type=float, default=6.0, help="rotation augmentation range in degrees (+-)")
     ap.add_argument("--exposure", type=float, default=0.0, help="probability of the camera-exposure augmentation")
+    ap.add_argument("--all-data", action="store_true", help="DEPLOY variant: also train on the held-out strips")
     ap.add_argument("--groove", type=float, default=0.0,
                     help="weight of the anti-merge loss: BCE on background pixels between two neighbouring sheets")
     ap.add_argument("--far-p", type=float, default=0.0,
@@ -146,6 +147,9 @@ def main():
     split = sync_split(items)
     val_f, exc_f = set(split["val"]), set(split["excluded"])
     train = [it for it in items if it["frame"] not in val_f and it["frame"] not in exc_f]
+    if args.all_data:                       # deploy variant: held-out strips TRAINED ON too (val becomes in-sample)
+        train = list(items)
+        print(f"ALL DATA: {len(train)} labelled strips incl. the held-out ones")
     if args.exclude_session:
         from common import splits as _sp
         before = len(train)
@@ -165,7 +169,7 @@ def main():
             if os.path.exists(js):
                 stem = os.path.splitext(os.path.basename(png))[0]
                 frame = stem.rsplit("_column_", 1)[0]
-                if frame in val_f | exc_f or any(x in frame for x in args.exclude_session):
+                if (not args.all_data and frame in val_f | exc_f) or any(x in frame for x in args.exclude_session):
                     continue
                 if any(x in stem for x in args.extra_holdout):
                     continue
@@ -201,7 +205,7 @@ def main():
     out_dir = os.path.join(paths.RUNS, f"edges_{args.name}")
     os.makedirs(out_dir, exist_ok=True)
     cfg = dict(steps=args.steps, seed=args.seed, lighting=args.lighting, n_train=len(train), n_val=len(val), width_modes=modes,
-               rot_max=args.rot_max, exposure=args.exposure, far_p=args.far_p, far_lo=args.far_lo, groove=args.groove)
+               rot_max=args.rot_max, exposure=args.exposure, far_p=args.far_p, far_lo=args.far_lo, groove=args.groove, all_data=args.all_data)
     tr = Tracker(out_dir, f"edges_{args.name}", MONITOR, GROUP, cfg, args.steps,
                  hero=("val_all/count_mae", "val_all/inst_iou"))
 

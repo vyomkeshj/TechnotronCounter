@@ -74,3 +74,22 @@ runs/edges_rfg_a/*
 runs/edges_rfg_b/*
 !runs/edges_rfg_b/last.pt
 !runs/edges_rfg_b/audit.json
+# branch alldata-2026-11-06: the all-data deploy variant (trained on the held-out frames too)
+!runs/columns_all_cols/
+runs/columns_all_cols/*
+!runs/columns_all_cols/stage2/
+runs/columns_all_cols/stage2/*
+!runs/columns_all_cols/stage2/last.pt
+!runs/columns_all_cols/stage2/audit.json
+!runs/edges_all_r3_a/
+runs/edges_all_r3_a/*
+!runs/edges_all_r3_a/last.pt
+!runs/edges_all_r3_b/
+runs/edges_all_r3_b/*
+!runs/edges_all_r3_b/last.pt
+!runs/edges_all_rfg_a/
+runs/edges_all_rfg_a/*
+!runs/edges_all_rfg_a/last.pt
+!runs/edges_all_rfg_b/
+runs/edges_all_rfg_b/*
+!runs/edges_all_rfg_b/last.pt
