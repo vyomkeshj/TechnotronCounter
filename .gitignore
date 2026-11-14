@@ -74,3 +74,10 @@ runs/edges_rfg_a/*
 runs/edges_rfg_b/*
 !runs/edges_rfg_b/last.pt
 !runs/edges_rfg_b/audit.json
+# 2026-11-15 production candidate (types 1/4/7 added): branch types147-2026-11-15
+!runs/columns_rep1_s42/
+runs/columns_rep1_s42/*
+!runs/columns_rep1_s42/stage2/
+runs/columns_rep1_s42/stage2/*
+!runs/columns_rep1_s42/stage2/last.pt
+!runs/columns_rep1_s42/stage2/audit.json

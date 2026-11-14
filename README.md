@@ -165,7 +165,9 @@ python -m tools.fragment_stress runs/edges_r3_a/last.pt runs/edges_r3_b/last.pt 
 python -m tools.column_field_eval         # column stage on the October field frames
 python -m tools.stress                    # robustness table (slow); --only "exposure_-2EV,zoom_0.75,rotate_+10,pitch_10%,..."
 python -m tools.negative_check            # false columns on column-free images (shipped: 82.9 %)
-python -m tools.type1_check               # type1 June frames (unlabelled): counts vs file name
+python -m tools.type1_check               # type1 June frames: counts vs file name (mostly IN TRAINING since 2026-11-15)
+python -m tools.column_heldout_check      # column stage per type on the held-out frames of ALL labelled types
+                                          #   (incl. types 1/4/7); --turn 90|180|270 for a turned camera
 bash tools/candidate_check.sh <name> <column .pt> [<edge_a .pt> <edge_b .pt>]   # ALL of the above for one candidate
 python -m tools.report                    # one render per held-out frame -> runs/_report/
 ```
@@ -207,6 +209,13 @@ python -m columns.train --name neg_s7 --seed 7 --steps2 8000 --class-override da
     --extra-data data/oct26/frames:4 --extra-data data/oct26_autolabel/frames:4 \
     --extra-data data/type8_autolabel/frames:4 --extra-holdout 39pieces_018 --extra-holdout 39pieces_021 \
     --negatives ../datasets/negatives_web/train --neg-frac 0.18 --bg-frac 0.12
+
+# 2026-11-15 PRODUCTION CANDIDATE (types 1/4/7 added): as alneg_s7, seed 42, AI-agent labels at 1x weight
+python -m columns.train --name rep1_s42 --seed 42 --init runs/columns_columns_t8_s7/stage2/last.pt --lr 5e-5 --steps2 12000 \
+    --class-override data/columns/relabel_type3_edge_columns.json --scale-lo 0.65 \
+    --extra-data data/oct26/frames:4 --extra-data data/oct26_autolabel/frames:4 \
+    --extra-data data/type8_autolabel/frames:4 --extra-holdout 39pieces_018 --extra-holdout 39pieces_021 \
+    --label-resize exact --negatives ../datasets/negatives_web/train --neg-frac 0.25 --bg-frac 0.15 --agent-rep 1
 
 # edge models: a seed model, self-labelled crops, then two self-trained models
 python -m edges.train --name seed --seed 7 --exclude-session 131412
@@ -297,6 +306,10 @@ Every candidate is scored with `bash tools/candidate_check.sh <name> runs/column
 | run | recipe (+ common flags) | false cols | old test single/voted | unseen t2 complete, voted | Oct sharp MAE | notes |
 |---|---|---|---|---|---|---|
 | **`alneg_s7`** (best, 2026-11-05) | `--seed 7 --init runs/columns_columns_t8_s7/stage2/last.pt --lr 5e-5 --steps2 12000 --label-resize exact --neg-frac 0.25 --bg-frac 0.15` + NEG paths; sheet models `edges_rot12_a/b` | **17.3 %** | **0.994 / 1.000** | 101, **81.2 %** | **0.51** | October exact 42 %; mask offset 1.0-1.2x (shipped 3-14x); weaker: type10 at -2.5 EV 12/23, pitch -10 % 0.888 |
+| **`rep1_s42` (PRODUCTION CANDIDATE 2026-11-15)** | alneg recipe + `--agent-rep 1` (data/columns/quality_agent: types 1/4/7, shrunk 3 px); `delivery/column_sheet_counter_2026-11-15` | 18.8 % | 0.994 / 1.000, 0 unflagged | 104, 81.7 % | 0.86 | held out type1 94.5 % / type4 95.7 % / type7 89.9 % correct (shipped 81.7 / 94.3 / 91.1); side view 0 complete; seed 7: old test 0.982 / 1.000 |
+| `newt2_s7/s42` | as rep1 but agent frames x4 | 19.6 / 17.1 % | 0.947 / 0.941 | 88.9 / 90.2 % | | type10 15/23: the model extends type10 outlines into the column above (agent convention at band boundaries) |
+| `newt_s7/s42` | as newt2, agent outlines NOT shrunk | 16.7 / 23.0 % | 0.953 / 0.964 | 85.4 / 87.8 % | | agent outlines are ~3 px loose (6 % area vs human) |
+| `turn_s7/s42` | rep1 + `--turn 0.5` (quarter turns) | 26.2 / 25.0 % | 0.947 / 0.953 | 90.2 / 89.2 % | 0.46 / 0.55 | column stage at 90/180/270 deg: 91 / 96 / 93 % correct (rep1: 89 / 93 / 81 %), but upright type10 16/23 and type1 82-86 % |
 | `alneg_s42` | as alneg_s7, `--seed 42` | 18.1 % | 0.988 / 1.000 | 102, 82.4 % | 0.47 | replicates alneg_s7 (two-seed rule met); same type10 014 +1 |
 | **CANDIDATE (final 2026-11-05)** `alneg_s7` + 4 sheet models averaged (`edges_r3_a/b` + `edges_rfg_a/b`) | `delivery/_cand_alneg_s7_2026-11-05`; score with `bash tools/candidate_check.sh <name> keep` on a folder holding the 5 ONNX files | 17.3 % | **0.994 / 1.000**, 0 unflagged wrong | 101, **89.1 %** | **0.49** | October exact 46.9 %; pitch -10 % 0.970; zoom 0.75 0.870; S-curve 133746_032 30; -2.5 EV 0.935 (shipped 0.953); sheet masks grown at `MASK_THR = 0.30` in the package (counts unchanged, whole masks 39 -> 52 %) |
 | `alneg_s7` + shipped sheet models | packaged as `delivery/_cand_alneg_s7_2026-11-05` | 17.3 % | 0.988 / 0.994 | 101, **83.2 %** | 0.51 | 1 unflagged miss (type10 140757_014, neighbour sliver); S-curve 133746_032 28 |
@@ -334,6 +347,14 @@ Every candidate is scored with `bash tools/candidate_check.sh <name> runs/column
   training frames on the fly. The photo/pattern part is copied from `runs/_wexp/negatives/` if present
   (the exact set behind the numbers here, incl. ~27 local wallpaper photos); otherwise `--build`
   regenerates synthetic patterns + scikit-image samples, which changes only the small "misc" row.
+- **AI-agent column labels, types 1/4/7** (`data/columns/quality_agent/`, 245 frames, received 2026-11-14 as
+  agent_colum_labels.zip, original kept in `../datasets/agent_column_labels_20261114/`). Made by Sonnet agents, NOT
+  humans. Before use they were (1) checked against the 6 human-labelled type4 frames (every class matched, IoU
+  0.78-0.95; those 6 keep the human labels), (2) shrunk 3 px (the agent tool traces ~3 px outside the sheets; 6 %
+  larger than human), (3) relabelled cropped in the type1 side view 134502 (user rule). Train them at
+  `--agent-rep 1` (human frames x4): at x4 the model copies their band-boundary convention and type10 counts +1.
+  Held out: type1 session 142016, type4 sessions 125748 + 130138, and for type7 (one session per variant) a frame
+  block of each session with a buffer frame on each side (`tools.column_heldout_check` reports type7 SAME-SESSION).
 - **October test frames** for `tools.oct_field_count --pin`: `data/oct26/pinned_test_frames.json` (58).
 - **Type1 frames** (no labels yet): `../datasets/quality_dataset_20260916/quality_dataset/type1_quality/passed/`.
   Three kinds: side view 134502 (every column cut off: target is NO complete column), 50 pieces
@@ -399,6 +420,15 @@ Every candidate is scored with `bash tools/candidate_check.sh <name> runs/column
   unseen type2 81 vs 83 %). `edges_rfg_a/b` (+ `--far-p 0.3 --exposure 0.3 --groove 1.0`, 8000 steps): fixes
   camera tilt (pitch -10 % 0.876 -> 0.970) and helps distance (0.6x 0.10 -> 0.24) but unseen type2 83 -> 74 %
   and broken masks (groove term). NEXT TO TRY: the rfg recipe WITHOUT `--groove` (or 0.2).
+- (2026-11-15) Motion-blur augmentation for the sheet models (`edges.train --motion 0.4`): camera shake 9 px 0.18 -> 0.45,
+  15-25 px still ~0 (the grooves are gone from the image), unseen type2 89 -> 84 %. Dropped; the defence is the
+  uncertainty flag / retake. `tools.stress` has motion rows.
+- (2026-11-15) Orientation: turned frames fail in EVERY stage (old test turned 90/180/270: 0.40 / 0.57 / 0.34; at 180 the
+  columns are right but the strips reach the sheet models upside down). The column model's own confidence picks the
+  upright orientation on only 68 % of frames. Quarter-turn training (`--turn`) fixes the column stage but costs upright
+  type10. Open: a geometric type10 rule along the stack direction + upright strips for turned frames.
+- (2026-11-15) AI-agent column labels (types 1/4/7): fit for training after shrinking 3 px and weighting 1x; at 4x the
+  model adopts their band-boundary convention and type10 counts +1 (15/23).
 - (2026-11-05) Averaging SIX sheet models (r3 + rfg + rot12 pairs) instead of the installed four (r3 + rfg): old test
   0.988 / 0.994, unseen type2 83 % (vs 89 %), type10 at -2.5 EV unchanged (15/23). The four-model set stays.
 - (2026-11-05) Automatic exposure correction at inference (`SHEETCOUNT_AUTO_EXPOSURE=1`, off by default: a frame whose

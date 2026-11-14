@@ -59,7 +59,29 @@ def perturbations():
             lin = (x.astype(np.float32) / 255.0) ** 2.2 * (2.0 ** ev)
             return np.round(255.0 * np.clip(lin, 0, 1) ** (1 / 2.2)).astype(np.uint8)
         return photo(f)
+    def motion(length, angle):
+        """Camera shake: a straight streak `length` px long at `angle` deg (native frame pixels)."""
+        def f(x):
+            k = np.zeros((length, length), np.float32)
+            k[length // 2, :] = 1.0
+            M = cv2.getRotationMatrix2D((length / 2 - 0.5, length / 2 - 0.5), angle, 1.0)
+            k = cv2.warpAffine(k, M, (length, length))
+            return cv2.filter2D(x, -1, k / k.sum())
+        return photo(f)
+    def turn(k):
+        """Camera turned by k x 90 deg clockwise: the whole frame rotated (shape changes), labels with it."""
+        def go(img):
+            H, W = img.shape[:2]
+            if k == 1:
+                return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE), np.float64([[0, -1, H - 1], [1, 0, 0]])
+            if k == 2:
+                return cv2.rotate(img, cv2.ROTATE_180), np.float64([[-1, 0, W - 1], [0, -1, H - 1]])
+            return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE), np.float64([[0, 1, 0], [-1, 0, W - 1]])
+        return go
     return {
+        "turn 90": turn(1), "turn 180": turn(2), "turn 270": turn(3),
+        "motion 9 h": motion(9, 0), "motion 15 h": motion(15, 0), "motion 25 h": motion(25, 0),
+        "motion 15 v": motion(15, 90), "motion 15 d": motion(15, 45), "motion 25 d": motion(25, 45),
         "exposure -2.5EV": exposure(-2.5), "exposure -2EV": exposure(-2), "exposure -1EV": exposure(-1),
         "exposure +1EV": exposure(1), "exposure +1.5EV": exposure(1.5), "exposure +2EV": exposure(2),
         "clean": photo(lambda x: x),

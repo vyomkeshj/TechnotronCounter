@@ -20,3 +20,11 @@ Rules that matter here:
 - Small test sets: train two seeds before claiming a gain.
 - Run from this folder; paths are relative (`paths.py`). Keep training entry points under
   `if __name__ == "__main__":` (Windows data-loader workers re-import scripts).
+- Labels made by AI agents (data/columns/quality_agent) are NOT ground truth: check new agent labels against human
+  gold frames (class + IoU + area ratio) before training, and render them. They have run loose and carried their own
+  boundary conventions (README, Data). Train them at lower weight than human labels and watch type10.
+- Run at most TWO trainings at once (three plus scoring once stalled for 2 h with the GPU idle); after starting a run,
+  confirm a progress line within a few minutes. If esoul says "Session has expired", tracking falls back to TensorBoard
+  only -- training is fine, the user must renew the token in ~/.config/esoul/credentials.
+- The README candidate log is the project memory: add every run (command, same-seed control, numbers) in the same
+  step as reporting it, and keep anything a comparison depends on inside the repo (runs/ is git-ignored).

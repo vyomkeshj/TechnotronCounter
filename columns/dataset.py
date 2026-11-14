@@ -107,7 +107,7 @@ class ColumnDataset(Dataset):
     def __init__(self, inst: list[dict], fg_only: list[dict], oversample_inst: int = 4,
                  negatives: list[str] = (), neg_frac: float = 0.0, bg_frac: float = 0.0, exposure_p: float = 0.0,
                  wide_p: float = 0.0, wide_scale_lo: float = 0.45, wide_rot: float = 20.0, persp: float = 0.15,
-                 occlude_p: float = 0.0):
+                 occlude_p: float = 0.0, turn_p: float = 0.0):
         """negatives: column-free images; neg_frac of the samples are one of them and bg_frac are
         background crops of a training frame that touch no labelled column. Both are trained as
         'no column anywhere' (fg = 0; flow and class losses masked). exposure_p: probability of the
@@ -115,11 +115,13 @@ class ColumnDataset(Dataset):
         the WIDE camera placement (scale down to wide_scale_lo = camera farther away, roll +-wide_rot deg,
         pitch/yaw perspective up to persp); the rest keep the measured default (scale SCALE_LO..1.2,
         +-12 deg, no perspective) so the existing operating point stays the bulk of training."""
-        self.items = [("inst", it) for it in inst] * oversample_inst + [("fg", it) for it in fg_only]
+        self.items = ([("inst", it) for it in inst for _ in range(it.get("rep", oversample_inst))]
+                      + [("fg", it) for it in fg_only])         # it["rep"]: per-frame repeat (e.g. agent labels)
         self.inst = list(inst)
         self.negatives, self.neg_frac, self.bg_frac, self.exposure_p = list(negatives), neg_frac, bg_frac, exposure_p
         self.wide_p, self.wide_scale_lo, self.wide_rot, self.persp = wide_p, wide_scale_lo, wide_rot, persp
         self.occlude_p = occlude_p                # in-frame occlusion: a band hides part of a complete column
+        self.turn_p = turn_p                      # camera turned 90/180/270 deg (portrait / landscape / upside down)
         self._cache: dict = {}
 
     def __len__(self):
@@ -244,6 +246,9 @@ class ColumnDataset(Dataset):
                 img, lab = img[y0:y1, x0:x1], lab[y0:y1, x0:x1]
         if random.random() < 0.5:
             img, lab = img[:, ::-1], lab[:, ::-1]
+        if self.turn_p and random.random() < self.turn_p:
+            code = random.choice((cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE))
+            img, lab = cv2.rotate(np.ascontiguousarray(img), code), cv2.rotate(np.ascontiguousarray(lab), code)
         img, lab = np.ascontiguousarray(img), np.ascontiguousarray(lab)
         wide = self.wide_p and random.random() < self.wide_p
         if wide or random.random() < 0.7:

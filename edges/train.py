@@ -132,6 +132,7 @@ def main():
                     help="also exempt the --texture-skip crop types from the clDice loss")
     ap.add_argument("--rot-max", type=float, default=6.0, help="rotation augmentation range in degrees (+-)")
     ap.add_argument("--exposure", type=float, default=0.0, help="probability of the camera-exposure augmentation")
+    ap.add_argument("--motion", type=float, default=0.0, help="probability of the camera-shake (motion blur) augmentation")
     ap.add_argument("--groove", type=float, default=0.0,
                     help="weight of the anti-merge loss: BCE on background pixels between two neighbouring sheets")
     ap.add_argument("--far-p", type=float, default=0.0,
@@ -187,7 +188,7 @@ def main():
     modes = {"center": 1 - args.squash_weight, "squash": args.squash_weight}
     ld = DataLoader(EdgeDataset(train, width_modes=modes, lighting=args.lighting, texture=args.texture, texture_max=args.texture_max,
                                     texture_skip=args.texture_skip, rot_max=args.rot_max, exposure_p=args.exposure,
-                                    far_p=args.far_p, far_lo=args.far_lo), args.batch, shuffle=True, num_workers=args.workers,
+                                    far_p=args.far_p, far_lo=args.far_lo, motion_p=args.motion), args.batch, shuffle=True, num_workers=args.workers,
                     drop_last=True, pin_memory=True, persistent_workers=args.workers > 0,
                     prefetch_factor=4 if args.workers > 0 else None)
     if args.init:
@@ -201,7 +202,7 @@ def main():
     out_dir = os.path.join(paths.RUNS, f"edges_{args.name}")
     os.makedirs(out_dir, exist_ok=True)
     cfg = dict(steps=args.steps, seed=args.seed, lighting=args.lighting, n_train=len(train), n_val=len(val), width_modes=modes,
-               rot_max=args.rot_max, exposure=args.exposure, far_p=args.far_p, far_lo=args.far_lo, groove=args.groove)
+               rot_max=args.rot_max, exposure=args.exposure, far_p=args.far_p, far_lo=args.far_lo, groove=args.groove, motion=args.motion)
     tr = Tracker(out_dir, f"edges_{args.name}", MONITOR, GROUP, cfg, args.steps,
                  hero=("val_all/count_mae", "val_all/inst_iou"))
 

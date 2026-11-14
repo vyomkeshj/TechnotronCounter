@@ -55,7 +55,8 @@ def run_stage(stage, out_dir, args, inst, fg_only, val, init=None):
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     ds = ColumnDataset(inst, fg_only, negatives=args.neg_images, neg_frac=args.neg_frac, bg_frac=args.bg_frac,
                        exposure_p=args.exposure, wide_p=args.wide_p, wide_scale_lo=args.wide_scale_lo,
-                       wide_rot=args.wide_rot, persp=args.persp, occlude_p=args.occlude)
+                       wide_rot=args.wide_rot, persp=args.persp, occlude_p=args.occlude,
+                       turn_p=args.turn)
     ld = DataLoader(ds, args.batch, shuffle=True, num_workers=args.workers, drop_last=True,
                     pin_memory=True, persistent_workers=args.workers > 0,
                     prefetch_factor=4 if args.workers > 0 else None)
@@ -77,7 +78,8 @@ def run_stage(stage, out_dir, args, inst, fg_only, val, init=None):
     cfg = dict(stage=stage, steps=steps, lr=lr, seed=args.seed, n_inst=len(inst), n_fg_only=len(fg_only),
                n_val=len(val), n_negatives=len(args.neg_images), neg_frac=args.neg_frac, bg_frac=args.bg_frac,
                exposure=args.exposure, wide_p=args.wide_p, wide_scale_lo=args.wide_scale_lo, wide_rot=args.wide_rot,
-               persp=args.persp, oversample=args.oversample, label_resize=args.label_resize, occlude=args.occlude)
+               persp=args.persp, oversample=args.oversample, label_resize=args.label_resize, occlude=args.occlude,
+               agent_rep=args.agent_rep, turn=args.turn)
     tr = Tracker(out_dir, f"columns_{args.name}_s{stage}", MONITOR, GROUP, cfg, steps,
                  hero=("val_deploy/inst_iou", "val_deploy/count_mae"))
 
@@ -200,6 +202,9 @@ def main():
                     "group are repeated N times (each repeat gets its own random augmentation)")
     ap.add_argument("--occlude", type=float, default=0.0, help="probability of the in-frame occlusion augmentation "
                     "(a band hides part of a complete column -> relabelled cropped)")
+    ap.add_argument("--turn", type=float, default=0.0, help="probability of turning a training frame by 90/180/270 deg")
+    ap.add_argument("--agent-rep", type=int, default=None, help="repeats per pass of the AI-agent-labelled frames "
+                    "(data/columns/quality_agent; others are repeated 4x)")
     ap.add_argument("--label-resize", default="nearest", choices=["nearest", "exact"],
                     help="label resizing: 'exact' = centre-aligned (fixes the half-pixel down-right mask offset)")
     ap.add_argument("--smoke", action="store_true", help="tiny run to check plumbing")
@@ -236,6 +241,11 @@ def main():
                           "group": os.path.basename(os.path.dirname(js))})
         inst = inst + extra * int(rep or 1)
         print(f"EXTRA {root}: +{len(extra)} frames x{int(rep or 1)}")
+    if args.agent_rep is not None:          # frames labelled by AI agents (data/columns/quality_agent) weigh less
+        for it in inst:
+            if it.get("source", "").startswith("quality_agent"):
+                it["rep"] = args.agent_rep
+        print(f"AGENT LABELS: {sum(1 for it in inst if 'rep' in it)} frames x{args.agent_rep} (others x4)")
     if args.oversample:
         for g, n in (x.split("=") for x in args.oversample.split(",")):
             more = [it for it in inst if it["group"] == g]

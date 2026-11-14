@@ -73,6 +73,22 @@ def exposure(img: np.ndarray) -> np.ndarray:
     return np.clip(np.round(out), 0, 255).astype(np.uint8)
 
 
+def motion_blur(img: np.ndarray, max_len: int = 21) -> np.ndarray:
+    """Camera shake, label-free: the image smeared along one random direction by 3..max_len px (a line kernel,
+    sometimes slightly bent like a real hand-held shake). Measured by the motion rows of tools.stress."""
+    L = random.randint(3, max_len) | 1
+    k = np.zeros((L, L), np.float32)
+    if random.random() < 0.7:
+        k[L // 2, :] = 1.0
+    else:                                                    # gently curved streak
+        xs = np.arange(L)
+        ys = np.round(L // 2 + random.uniform(-0.15, 0.15) * (xs - L // 2) ** 2 / max(1, L // 2)).astype(int)
+        k[np.clip(ys, 0, L - 1), xs] = 1.0
+    M = cv2.getRotationMatrix2D((L / 2 - 0.5, L / 2 - 0.5), random.uniform(0, 180), 1.0)
+    k = cv2.warpAffine(k, M, (L, L))
+    return cv2.filter2D(img, -1, k / max(k.sum(), 1e-6))
+
+
 def degrade(img: np.ndarray) -> np.ndarray:
     """Blur / sensor noise / JPEG."""
     if min(img.shape[:2]) < 16:
