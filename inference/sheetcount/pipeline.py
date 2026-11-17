@@ -28,8 +28,8 @@ from .straighten import (CUT_DIS, CUT_DIS_EX, CUT_DIS_EX2, POSUN_MASKY, _rotate,
                          to_native_canvas)
 
 MEAN, STD = 0.45, 0.23
-COLUMN_SIZE = 256                 # column model input (letterboxed)
-COLUMN_MIN_AREA = 25              # at 256
+COLUMN_SIZE = int(os.environ.get("SHEETCOUNT_COLUMN_SIZE", "256"))   # column model input (letterboxed)
+COLUMN_MIN_AREA = 25              # at 256 (scaled with COLUMN_SIZE)
 SHEET_THR = 0.50                  # sheet foreground threshold
 BAND_FRAC = 0.50                  # count in the centre 50 % of the column width
 SHEET_MIN_AREA = 6
@@ -99,11 +99,11 @@ class SheetCounter:
         imgL, s, px, py = letterbox(frame, COLUMN_SIZE)
         o = self.col.run(None, {"input": _to_input(imgL)})[0][0]
         prob = _sigmoid(o[0])
-        lab = follow_flows(prob > 0.5, o[1:3])
+        lab = follow_flows(prob > 0.5, o[1:3], scale=COLUMN_SIZE / 256)
         pc = _sigmoid(o[3]) if o.shape[0] >= 4 else None
         labN = _unletter(lab, s, px, py, (H, W), cv2.INTER_NEAREST).astype(np.int32)
         pcN = _unletter(pc, s, px, py, (H, W), cv2.INTER_LINEAR) if pc is not None else None
-        ids = [i for i in range(1, int(lab.max()) + 1) if (lab == i).sum() >= COLUMN_MIN_AREA]
+        ids = [i for i in range(1, int(lab.max()) + 1) if (lab == i).sum() >= COLUMN_MIN_AREA * (COLUMN_SIZE / 256) ** 2]
         cols = []
         for i in ids:
             m = labN == i
@@ -133,24 +133,37 @@ class SheetCounter:
         ang = _straight_angle([cv2.minAreaRect(p) for p in polys], W, straight)
         rot = _rotate(frame, ang)
         RW = rot.shape[1]
-        out = []
-        for p in polys:
+        def cut_out(p, strict=False):
             single = np.zeros_like(gray); cv2.fillPoly(single, [p], 255)
             outline = np.zeros_like(gray); cv2.drawContours(outline, [p], -1, 255, 1)
             rm, ro = _rotate(single, ang), _rotate(outline, ang)
             lmin1, lmax1 = _x_limits(POSUN_MASKY, rm, ro)
             lmin2, _ = _x_limits(-POSUN_MASKY, rm, ro)
             if lmin1[0] == 0 and lmin2[0] == 0:
-                out.append(None); continue
+                return None
             a, b = sorted((lmin2[1], lmax1[1]))
             d = b - a
+            if strict and d < 0.5 * min(cv2.minAreaRect(p)[1]):     # edges closer than half the column's width
+                return None
             cut = CUT_DIS if d > 220 else CUT_DIS_EX if d > 120 else CUT_DIS_EX2
             x0, x1 = int(np.clip(a - cut, 0, RW - 1)), int(np.clip(b + cut, 0, RW))
             if x1 <= x0:
-                out.append(None); continue
+                return None
             crop = rot[:, x0:x1].copy()
             crop[rm[:, x0:x1] == 0] = 0
-            out.append(to_native_canvas(cv2.rotate(crop, cv2.ROTATE_180)))
+            return to_native_canvas(cv2.rotate(crop, cv2.ROTATE_180))
+
+        # A small notch in a finely traced outline can pass for the opposite edge: the column then looks a few px
+        # wide and is emptied or cut too narrow. A column whose two edges are closer than half its own width is
+        # retried with simplified outlines (3, then 6 px); if none passes, the original result stands. A column
+        # whose edges are found at a plausible width is cut exactly as before.
+        out = []
+        for p in polys:
+            c = cut_out(p, strict=True)
+            for eps in (3.0, 6.0):
+                if c is None:
+                    c = cut_out(cv2.approxPolyDP(p, eps, True), strict=True)
+            out.append(c if c is not None else cut_out(p))
         return out
 
     # ---- 3. sheets --------------------------------------------------------------------

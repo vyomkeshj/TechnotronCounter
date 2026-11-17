@@ -29,7 +29,7 @@ DEPLOY_GROUPS = ("type2", "type3", "type10")
 def predict(net, x: torch.Tensor):
     o = net(x[None].to(DEVICE))[0].cpu().numpy()
     fg = 1 / (1 + np.exp(-o[0])) > 0.5
-    lab = follow_flows(fg, o[1:3])
+    lab = follow_flows(fg, o[1:3], scale=fg.shape[0] / 256)
     p_crop = 1 / (1 + np.exp(-o[3])) if o.shape[0] >= 4 else None
     return lab, p_crop
 

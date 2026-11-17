@@ -32,6 +32,7 @@ from torch.utils.data import DataLoader
 import paths
 from common.tracking import Tracker
 from common.unet import UNet, save_checkpoint
+from edges.clutter import build_bank
 from edges.dataset import WIDTH_MODES, EdgeDataset, build_val, discover, sync_split
 from edges.evaluate import evaluate, preview
 
@@ -132,12 +133,16 @@ def main():
                     help="also exempt the --texture-skip crop types from the clDice loss")
     ap.add_argument("--rot-max", type=float, default=6.0, help="rotation augmentation range in degrees (+-)")
     ap.add_argument("--exposure", type=float, default=0.0, help="probability of the camera-exposure augmentation")
+    ap.add_argument("--repeat-type", default="", help="comma list type=N: repeat that type's labelled strips N times")
+    ap.add_argument("--base", type=int, default=16, help="UNet width (channels of the first level; from scratch only)")
     ap.add_argument("--motion", type=float, default=0.0, help="probability of the camera-shake (motion blur) augmentation")
     ap.add_argument("--groove", type=float, default=0.0,
                     help="weight of the anti-merge loss: BCE on background pixels between two neighbouring sheets")
     ap.add_argument("--far-p", type=float, default=0.0,
                     help="probability of the farther-camera augmentation (whole strip shrunk, detail lost)")
     ap.add_argument("--far-lo", type=float, default=0.5, help="smallest shrink factor of --far-p")
+    ap.add_argument("--clutter", type=float, default=0.0,
+                    help="probability of filling the empty rows past a window's strip ends with background (edges.clutter)")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
     if args.smoke:
@@ -152,6 +157,11 @@ def main():
         before = len(train)
         train = [it for it in train if not any(s in (_sp.session_of(it["frame"]) or "") for s in args.exclude_session)]
         print(f"HOLDOUT {args.exclude_session}: dropped {before - len(train)} training crops")
+    if args.repeat_type:                    # e.g. type1=3,type4=3,type7=3: those types' labelled strips x N per pass
+        for t, n in (x.split("=") for x in args.repeat_type.split(",")):
+            more = [it for it in train if it["type"] == t]
+            train = train + more * (int(n) - 1)
+            print(f"REPEAT {t}: {len(more)} strips x{n}")
     if args.limit_per_type:
         limits = {k.strip(): int(v) for k, v in (p.split("=") for p in args.limit_per_type.split(","))}
         train = subsample_per_type(train, limits, args.seed)
@@ -188,7 +198,8 @@ def main():
     modes = {"center": 1 - args.squash_weight, "squash": args.squash_weight}
     ld = DataLoader(EdgeDataset(train, width_modes=modes, lighting=args.lighting, texture=args.texture, texture_max=args.texture_max,
                                     texture_skip=args.texture_skip, rot_max=args.rot_max, exposure_p=args.exposure,
-                                    far_p=args.far_p, far_lo=args.far_lo, motion_p=args.motion), args.batch, shuffle=True, num_workers=args.workers,
+                                    far_p=args.far_p, far_lo=args.far_lo, motion_p=args.motion,
+                                    clutter_p=args.clutter, clutter_bank=build_bank() if args.clutter else None), args.batch, shuffle=True, num_workers=args.workers,
                     drop_last=True, pin_memory=True, persistent_workers=args.workers > 0,
                     prefetch_factor=4 if args.workers > 0 else None)
     if args.init:
@@ -196,13 +207,13 @@ def main():
         net = load_checkpoint(args.init, DEVICE).train()
         print(f"INIT from {args.init} (fine-tune, lr {args.lr})")
     else:
-        net = UNet(out_ch=3).to(DEVICE)
+        net = UNet(out_ch=3, base=args.base).to(DEVICE)
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-4)
     sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.steps)
     out_dir = os.path.join(paths.RUNS, f"edges_{args.name}")
     os.makedirs(out_dir, exist_ok=True)
     cfg = dict(steps=args.steps, seed=args.seed, lighting=args.lighting, n_train=len(train), n_val=len(val), width_modes=modes,
-               rot_max=args.rot_max, exposure=args.exposure, far_p=args.far_p, far_lo=args.far_lo, groove=args.groove, motion=args.motion)
+               rot_max=args.rot_max, exposure=args.exposure, far_p=args.far_p, far_lo=args.far_lo, groove=args.groove, motion=args.motion, clutter=args.clutter, base=args.base, repeat_type=args.repeat_type)
     tr = Tracker(out_dir, f"edges_{args.name}", MONITOR, GROUP, cfg, args.steps,
                  hero=("val_all/count_mae", "val_all/inst_iou"))
 

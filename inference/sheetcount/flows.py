@@ -40,7 +40,7 @@ def flow_targets(lab: np.ndarray, aniso: bool = False) -> np.ndarray:
 
 
 def follow_flows(fg: np.ndarray, flow: np.ndarray, n_iter: int = 40, bin_px: int = 3,
-                 min_area: int = 25, min_hits: int = 3) -> np.ndarray:
+                 min_area: int = 25, min_hits: int = 3, scale: float = 1.0) -> np.ndarray:
     """Instance labels (uint8/int32, 1..N) from a fg mask and a (2,H,W) flow field.
 
     Two safeguards make "tiny bridge" fusions structurally impossible (field
@@ -48,6 +48,8 @@ def follow_flows(fg: np.ndarray, flow: np.ndarray, n_iter: int = 40, bin_px: int
     re-split at 25 % of its OWN peak landing density -- a real instance has one
     density core, a bridged pair has two joined by a sparse trail.
     """
+    if scale != 1.0:          # constants are set at 256 input; scale = input size / 256 (e.g. 2 at 512)
+        n_iter, bin_px, min_area = int(round(n_iter * scale)), int(round(bin_px * scale)), int(round(min_area * scale ** 2))
     ys, xs = np.where(fg)
     H, W = fg.shape
     if len(ys) == 0:

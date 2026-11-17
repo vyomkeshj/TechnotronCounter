@@ -56,7 +56,7 @@ def run_stage(stage, out_dir, args, inst, fg_only, val, init=None):
     ds = ColumnDataset(inst, fg_only, negatives=args.neg_images, neg_frac=args.neg_frac, bg_frac=args.bg_frac,
                        exposure_p=args.exposure, wide_p=args.wide_p, wide_scale_lo=args.wide_scale_lo,
                        wide_rot=args.wide_rot, persp=args.persp, occlude_p=args.occlude,
-                       turn_p=args.turn)
+                       turn_p=args.turn, seam_r=args.seam_r, paste_p=args.paste)
     ld = DataLoader(ds, args.batch, shuffle=True, num_workers=args.workers, drop_last=True,
                     pin_memory=True, persistent_workers=args.workers > 0,
                     prefetch_factor=4 if args.workers > 0 else None)
@@ -79,7 +79,7 @@ def run_stage(stage, out_dir, args, inst, fg_only, val, init=None):
                n_val=len(val), n_negatives=len(args.neg_images), neg_frac=args.neg_frac, bg_frac=args.bg_frac,
                exposure=args.exposure, wide_p=args.wide_p, wide_scale_lo=args.wide_scale_lo, wide_rot=args.wide_rot,
                persp=args.persp, oversample=args.oversample, label_resize=args.label_resize, occlude=args.occlude,
-               agent_rep=args.agent_rep, turn=args.turn)
+               agent_rep=args.agent_rep, turn=args.turn, seam_w=args.seam_w, seam_r=args.seam_r, paste=args.paste)
     tr = Tracker(out_dir, f"columns_{args.name}_s{stage}", MONITOR, GROUP, cfg, steps,
                  hero=("val_deploy/inst_iou", "val_deploy/count_mae"))
 
@@ -90,11 +90,15 @@ def run_stage(stage, out_dir, args, inst, fg_only, val, init=None):
     try:
         for step in range(1, steps + 1):
             net.train()
-            x, fg, fl, valid, cls = (t.to(DEVICE, non_blocking=True) for t in next(it))
+            x, fg, fl, valid, cls, seam = (t.to(DEVICE, non_blocking=True) for t in next(it))
             out = net(x)
             bce, dice = dice_bce(out[:, :1], fg)
             w = fg * valid[:, None, None, None]
             mse = (((out[:, 1:3] - fl) ** 2) * w).sum() / (w.sum() * 2 + 1e-6)
+            if args.seam_w:          # seam pixels between touching columns weigh 1 + seam_w (fg BCE and flow MSE)
+                sb = F.binary_cross_entropy_with_logits(out[:, :1], fg, reduction="none")
+                bce = bce + args.seam_w * (sb * seam).mean()
+                mse = mse + args.seam_w * (((out[:, 1:3] - fl) ** 2) * w * seam).sum() / (w.sum() * 2 + 1e-6)
             loss = bce + dice + 2.0 * mse
             parts = {"bce": bce, "dice": dice, "mse": mse}
             if with_cls:
@@ -207,6 +211,11 @@ def main():
                     "(data/columns/quality_agent; others are repeated 4x)")
     ap.add_argument("--label-resize", default="nearest", choices=["nearest", "exact"],
                     help="label resizing: 'exact' = centre-aligned (fixes the half-pixel down-right mask offset)")
+    ap.add_argument("--seam-w", type=float, default=0.0, help="extra loss weight on the seams between touching "
+                    "columns (fg BCE and flow MSE; see columns.dataset.seam_map)")
+    ap.add_argument("--seam-r", type=int, default=2, help="seam half-width in px at 256")
+    ap.add_argument("--paste", type=float, default=0.0, help="probability of pasting a cropped piece just past a "
+                    "complete column's end (columns.dataset.ColumnDataset._paste)")
     ap.add_argument("--smoke", action="store_true", help="tiny run to check plumbing")
     args = ap.parse_args()
     os.environ["COLUMN_SCALE_LO"] = str(args.scale_lo)     # DataLoader workers re-import columns.dataset

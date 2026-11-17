@@ -27,9 +27,9 @@ from common.flows import flow_targets
 from common.imageio import degrade, exposure, letterbox, photometric, to_tensor
 
 cv2.setNumThreads(0)
-SIZE = 256                                          # model input (letterboxed)
+SIZE = int(os.environ.get("COLUMN_SIZE", "256"))   # model input (letterboxed); 512 = the high-resolution test
 SCALE_LO = float(os.environ.get("COLUMN_SCALE_LO", "0.8"))  # scale-aug lower bound; columns.train --scale-lo sets it
-WORK_CAP = 640            # decode once at <= 640 px long side; augmentation cost is O(pixels)
+WORK_CAP = max(640, int(2.5 * SIZE))   # decode once at <= this long side (640 at 256); augmentation cost is O(pixels)
 # How LABELS are resized. "nearest" (cv2.INTER_NEAREST) samples each output pixel at the TOP-LEFT of its source
 # block while images are resampled at the block CENTRE, so every model trained with it outputs masks shifted
 # half a 256-px pixel down-right (~3.75 px at 1920 px, measured 2026-11-04). "exact" = INTER_NEAREST_EXACT,
@@ -107,7 +107,7 @@ class ColumnDataset(Dataset):
     def __init__(self, inst: list[dict], fg_only: list[dict], oversample_inst: int = 4,
                  negatives: list[str] = (), neg_frac: float = 0.0, bg_frac: float = 0.0, exposure_p: float = 0.0,
                  wide_p: float = 0.0, wide_scale_lo: float = 0.45, wide_rot: float = 20.0, persp: float = 0.15,
-                 occlude_p: float = 0.0, turn_p: float = 0.0):
+                 occlude_p: float = 0.0, turn_p: float = 0.0, seam_r: int = 0, paste_p: float = 0.0):
         """negatives: column-free images; neg_frac of the samples are one of them and bg_frac are
         background crops of a training frame that touch no labelled column. Both are trained as
         'no column anywhere' (fg = 0; flow and class losses masked). exposure_p: probability of the
@@ -122,6 +122,8 @@ class ColumnDataset(Dataset):
         self.wide_p, self.wide_scale_lo, self.wide_rot, self.persp = wide_p, wide_scale_lo, wide_rot, persp
         self.occlude_p = occlude_p                # in-frame occlusion: a band hides part of a complete column
         self.turn_p = turn_p                      # camera turned 90/180/270 deg (portrait / landscape / upside down)
+        self.seam_r = seam_r                      # seam map: pixels within seam_r (at 256) of 2 different columns
+        self.paste_p = paste_p                    # a cropped piece placed just past a complete column's end
         self._cache: dict = {}
 
     def __len__(self):
@@ -219,6 +221,64 @@ class ColumnDataset(Dataset):
                 lut[j] = 1.0
         return img, out, np.array(lut, np.float32)
 
+    def _paste(self, img, lab, lut):
+        """The fused-column failure, synthesised: a piece (15-50 % of the length) of another column of the same frame
+        (columns in a frame are parallel, so a pure translation keeps it realistic) placed 2-12 px from a complete
+        column, either BESIDE it along its long edge (type7 143956_003, type1 142210_025) or past one END (two pieces
+        either side of a strap, type1 142016_019). The piece is a new CROPPED instance; columns it covers lose those
+        pixels and become cropped if they lose > 5 %."""
+        ids = [i for i in range(1, int(lab.max()) + 1) if i < len(lut) and (lab == i).sum() > 400]
+        good = [i for i in ids if lut[i] < 0.5]
+        if not good or len(ids) < 2:
+            return img, lab, lut
+        a = random.choice(good)
+        donor = random.choice([i for i in ids if i != a])
+        ys, xs = np.nonzero(lab == a)
+        P = np.stack([xs, ys], 1).astype(np.float32)
+        mu = P.mean(0)
+        _, _, vt = np.linalg.svd(P - mu, full_matrices=False)
+        u, v = vt[0], vt[1]
+        ta, wa = (P - mu) @ u, float(np.ptp((P - mu) @ v))
+        dy, dx = np.nonzero(lab == donor)
+        Q = np.stack([dx, dy], 1).astype(np.float32)
+        tq = (Q - mu) @ u
+        L = float(tq.max() - tq.min())
+        frac = random.uniform(0.15, 0.5)                       # the piece: one end of the donor column
+        keep = tq <= tq.min() + frac * L if random.random() < 0.5 else tq >= tq.max() - frac * L
+        Q = Q[keep]
+        tq = (Q - mu) @ u
+        gap = random.uniform(2, 12)
+        lat = (Q - mu) @ v
+        sa = (P - mu) @ v
+        if random.random() < 0.5:                              # BESIDE the column, along its long edge
+            shift_t = random.uniform(ta.min(), ta.max()) - tq.mean()
+            if random.random() < 0.5:
+                shift_v = sa.max() + gap - lat.min()
+            else:
+                shift_v = sa.min() - gap - lat.max()
+        else:                                                  # past one END (two pieces either side of a strap)
+            shift_t = ta.max() + gap - tq.min() if random.random() < 0.5 else ta.min() - gap - tq.max()
+            shift_v = -lat.mean() + random.uniform(-0.3, 0.3) * wa
+        Qn = np.round(Q + u * shift_t + v * shift_v).astype(np.int64)
+        src = Q.astype(np.int64)
+        h, w = lab.shape
+        ok = (Qn[:, 0] >= 0) & (Qn[:, 0] < w) & (Qn[:, 1] >= 0) & (Qn[:, 1] < h)
+        if ok.sum() < 200:
+            return img, lab, lut
+        Qn, src = Qn[ok], src[ok]
+        if (lab[Qn[:, 1], Qn[:, 0]] == a).mean() > 0.02:      # must not cover the complete column itself
+            return img, lab, lut
+        img, out, lut = img.copy(), lab.copy(), list(lut)
+        hit = np.unique(lab[Qn[:, 1], Qn[:, 0]])
+        img[Qn[:, 1], Qn[:, 0]] = img[src[:, 1], src[:, 0]]
+        new = len(lut)
+        out[Qn[:, 1], Qn[:, 0]] = new
+        lut.append(1.0)
+        for j in hit:
+            if j > 0 and j < new and (out == j).sum() < 0.95 * (lab == j).sum():
+                lut[j] = 1.0
+        return img, out, np.array(lut, np.float32)
+
     def __getitem__(self, idx):
         r = random.random()
         neg = None
@@ -234,6 +294,8 @@ class ColumnDataset(Dataset):
             img, lab, lut = self._base(kind, it)
             if kind == "inst" and self.occlude_p and random.random() < self.occlude_p:
                 img, lab, lut = self._occlude(img, lab, lut)
+            if kind == "inst" and self.paste_p and random.random() < self.paste_p:
+                img, lab, lut = self._paste(img, lab, lut)
         ys, xs = np.where(lab > 0)
         if len(ys) > 50 and random.random() < 0.65:
             h, w = lab.shape
@@ -278,8 +340,20 @@ class ColumnDataset(Dataset):
         valid = kind == "inst"
         fl = flow_targets(lab) if valid else np.zeros((2, SIZE, SIZE), np.float32)
         cls = lut[np.clip(lab, 0, len(lut) - 1)] if valid else np.zeros((SIZE, SIZE), np.float32)
+        seam = seam_map(lab, self.seam_r) if valid and self.seam_r else np.zeros((SIZE, SIZE), np.float32)
         return (to_tensor(img), torch.from_numpy((lab > 0).astype(np.float32))[None], torch.from_numpy(fl),
-                torch.tensor(1.0 if valid else 0.0), torch.from_numpy(cls.astype(np.float32))[None])
+                torch.tensor(1.0 if valid else 0.0), torch.from_numpy(cls.astype(np.float32))[None],
+                torch.from_numpy(seam)[None])
+
+
+def seam_map(lab: np.ndarray, r: int) -> np.ndarray:
+    """1 where a pixel lies within r px of two DIFFERENT columns (the thin gap between touching columns and both
+    rims), else 0. The fused-column failure is the model smoothing across exactly these pixels."""
+    k = np.ones((2 * r + 1, 2 * r + 1), np.uint8)
+    big = np.int32(1 << 20)
+    hi = cv2.dilate(lab.astype(np.float32), k)                                  # largest id nearby
+    lo = -cv2.dilate(-np.where(lab > 0, lab, big).astype(np.float32), k)        # smallest id nearby
+    return ((hi > 0) & (lo < big) & (hi != lo)).astype(np.float32)
 
 
 def build_val(items: list[dict]) -> list[dict]:

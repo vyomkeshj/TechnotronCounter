@@ -255,6 +255,12 @@ python -m edges.train --name rfg_b --seed 7 --init runs/edges_final_b/last.pt --
     --exclude-session 131412 --extra-data data/edges_pseudo --extra-data data/oct26/edges:4 \
     --cldice 0.5 --texture 0.3 --texture-max 0.25 --texture-skip type2 --cldice-skip-exempt \
     --rot-max 12 --far-p 0.3 --exposure 0.3 --groove 1.0
+# 2026-11-15 EDGE CANDIDATE (not installed): three base-32 sheet models from scratch, + types 1/4/7 strips + clutter;
+# seeds 42 / 7 / 3 = f32c_a / f32c_b / f32c_c, averaged (runs/_candidates/edges_f32c_abc)
+python -m edges.train --name f32c_a --seed 42 --lr 1e-3 --steps 12000 --base 32 --clutter 0.5 \
+    --exclude-session 131412 --extra-data data/edges_pseudo --extra-data data/oct26/edges:4 \
+    --cldice 0.5 --texture 0.3 --texture-max 0.25 --texture-skip type2 --cldice-skip-exempt \
+    --rot-max 12 --far-p 0.3 --exposure 0.3 --groove 1.0
 
 # export to the inference package (the pipeline averages every models/sheet_edges*.onnx), then score
 python -m common.export_onnx runs/columns_alneg_s7/stage2/last.pt inference/models/column_flow.onnx
@@ -306,6 +312,8 @@ Every candidate is scored with `bash tools/candidate_check.sh <name> runs/column
 | run | recipe (+ common flags) | false cols | old test single/voted | unseen t2 complete, voted | Oct sharp MAE | notes |
 |---|---|---|---|---|---|---|
 | **`alneg_s7`** (best, 2026-11-05) | `--seed 7 --init runs/columns_columns_t8_s7/stage2/last.pt --lr 5e-5 --steps2 12000 --label-resize exact --neg-frac 0.25 --bg-frac 0.15` + NEG paths; sheet models `edges_rot12_a/b` | **17.3 %** | **0.994 / 1.000** | 101, **81.2 %** | **0.51** | October exact 42 %; mask offset 1.0-1.2x (shipped 3-14x); weaker: type10 at -2.5 EV 12/23, pitch -10 % 0.888 |
+| `seam_s42` / `seam_s7` | rep1 recipe + `--seam-w 5 --paste 0.3` (seam-weighted fg/flow loss between touching columns + pasted cropped pieces beside / past complete columns; controls rep1_s42 / rep1_s7) | 24.6 / 23.2 % (ctl 18.8 / 21.2) | 0.988 / 0.994, 0.982 / 0.994 (ctl 0.994 / 1.000, 0.982 / 1.000) | 96, 89.6 % / 85.4 % (ctl 104, 81.7 % / 100, 83.0 %) | 0.86 / 0.86 | NEGATIVE for fusion: `tools.fused_columns` held-out fused 18 / 19 (ctl 19 / 20), fused-and-called-complete 6 / 6 (ctl 6 / 5) -- unchanged; only on TRAINING frames 19 / 19 (ctl 34 / 36). Costs: more false columns, voted test 1.000 -> 0.994 both seeds, rotate -20 type10 10-13/23 (ctl 14). The held-out set holds only 2 harmful fusions (type1 142016 strap; seam_s42 fixes _020, not _019), so it barely measures the problem |
+| `hr512_s42` / `hr512_s7` (control `hr256ctl_s42`) | rep1_s42 / rep1_s7 continued 8000 steps at lr 1e-4, batch 16, COLUMN INPUT 512 px (`COLUMN_SIZE=512` to train, `SHEETCOUNT_COLUMN_SIZE=512` to run; decode cap 1280, flow readout scaled); control = the same continuation at 256 | 19.6 / 19.4 % (ctl 15.7) | 0.965 / 0.982, 0.936 / 0.971 (ctl 0.971 / 0.982; s7: type2 18/20 + 2 false) | 88 cols 85.2 / 89.8 %, 93 cols 86.0 / 91.4 % (ctl 106 cols 78.3 / 81.1 %: FEWER type2 columns called complete, exact 75 / 80 vs 83) | October 76 / 69 complete found, sharp exact 71 / 78 % (ctl 66, 72 %) | FUSION FIXED on both seeds: `tools.seam_check` merged pairs 7 / 8 of 501 (ctl 20), pairs losing a complete column 1 / 2 (ctl 9), type3 gap painted 11.6 / 12.5 % (ctl 21.6); held-out outline IoU 0.912 / 0.911 (ctl 0.897). Zoom 0.6 stress 0.917 / 0.893 (ctl 0.290), exposure better, type1 voted 92.4 / 93.9 % (ctl 81.7). WORSE: rotate -20 0.836 / 0.868 (ctl 0.934), false columns +4 pts, fewer type2 complete on unseen frames. CPU 65 ms vs 19 ms per frame. Needs the straightener fix (below) |
 | **`rep1_s42` (PRODUCTION CANDIDATE 2026-11-15)** | alneg recipe + `--agent-rep 1` (data/columns/quality_agent: types 1/4/7, shrunk 3 px); `delivery/column_sheet_counter_2026-11-15` | 18.8 % | 0.994 / 1.000, 0 unflagged | 104, 81.7 % | 0.86 | held out type1 94.5 % / type4 95.7 % / type7 89.9 % correct (shipped 81.7 / 94.3 / 91.1); side view 0 complete; seed 7: old test 0.982 / 1.000 |
 | `newt2_s7/s42` | as rep1 but agent frames x4 | 19.6 / 17.1 % | 0.947 / 0.941 | 88.9 / 90.2 % | | type10 15/23: the model extends type10 outlines into the column above (agent convention at band boundaries) |
 | `newt_s7/s42` | as newt2, agent outlines NOT shrunk | 16.7 / 23.0 % | 0.953 / 0.964 | 85.4 / 87.8 % | | agent outlines are ~3 px loose (6 % area vs human) |
@@ -324,6 +332,76 @@ Every candidate is scored with `bash tools/candidate_check.sh <name> runs/column
 | `scratch_ctrl_s7` | `--seed 7`, NO --init (stage 1 12k + stage 2 4k) | 87.5 % | 0.988 / 0.988 | 88, 69.3 % | 2.84 | one run < the 3-step chain |
 | `scratch_rob_s7` | as scratch_ctrl + NEG `--exposure 0.4 --wide-p 0.35` | **7.9 %** | 0.988 / 0.994 | 81, 56.8 % | 3.40 | roll/tilt/zoom 0.75 +0.04..0.09 vs its control; type2 called cropped more; type1 56/72 exact |
 | `ftA_s7` / `ftB_s7` | `--seed 7 --init runs/columns_scratch_rob_s7/stage2/last.pt --lr 5e-5 --steps2 8000` NEG `--wide-p 0.15` (B: `--oversample type2=2`) | | | | | running 2026-11-04 |
+
+## Edge candidate log (2026-11-15 on: types 1/4/7 added; 13-run budget)
+
+Single models, scored with `python -m tools.edge_heldout_check <ckpt>` on the held-out strips (type1 5, type2 17,
+type3 18, type4 7, type7 6, type10 15). R3 = the r3 flags (`--lr 1e-4 --steps 4000 --exclude-session 131412
+--extra-data data/edges_pseudo --extra-data data/oct26/edges:4 --cldice 0.5 --texture 0.3 --texture-max 0.25
+--texture-skip type2 --cldice-skip-exempt`); RFG = R3 with `--steps 8000 --rot-max 12 --far-p 0.3 --exposure 0.3 --groove 1.0`.
+
+| run | recipe | type4 exact (MAE) | type7 | type1 | all 68 exact (MAE) | note |
+|---|---|---|---|---|---|---|
+| shipped `r3_a` | (no types 1/4/7) | 5/7 (0.71) | 4/6 | 5/5 | 63 (0.12) | |
+| shipped `rfg_a` | (no types 1/4/7) | 4/7 (2.43) | 4/6 | 5/5 | 61 (0.31) | |
+| `x1_a/b` | R3 from edges_final, + new strips (groove-to-groove labels) | 2/7 (9.86) | 3/6 | 4/5 | 59 (1.07) | wide labels -> sheets merge (pair: type4 2/7, MAE 9.3) |
+| `x2_a` | as x1, type4/7 labels THINNED to ~45 % | 4/7 (0.86) | 4/6 | 5/5 | 63 (0.12) | thinning fixes the collapse |
+| **`x3_a`** | RFG from edges_final, + new strips (thinned) | **6/7 (0.14)** | 4/6 | 4/5 | **63 (0.07)** | best single so far |
+| `x4_a` | x3 + `--repeat-type type1=3,type4=3,type7=3` | 6/7 | | | 62 (0.09) | no gain; type2 15/17 |
+| `s16_a` | RFG from SCRATCH, base 16, `--lr 1e-3 --steps 12000` | 4/7 (0.57) | 4/6 | 5/5 | 63 (0.09) | type2 17/17; rot +8/-8: 44 / 35 |
+| `s24_a` | as s16 with `--base 24` | 5/7 (0.29) | 4/6 | | 64 (0.06) | rot +8/-8: 47 / 36 |
+| **`s32_a`** | as s16 with `--base 32` | **6/7 (0.14)** | **5/6** | | **66 (0.03)** | best; rot +8/-8: 45 / 38 (x3_a 45 / 39) |
+| `s32_b` | s32 seed 7 (second seed) | 6/7 (0.14) | 4/6 | 5/5 | 63 (0.07) | type2 17/17, type3 16/18; rot +8/-8: 47 / 40 |
+| `s32_a` + `s32_b` averaged | | 5/7 | 4/6 | 5/5 | 64 (0.06) | type1/2/3/10 all exact; misses = type7 green light x2 + type4 x2 |
+| `x5_a` | x3 + `--clutter 0.5` (background past the strip ends, `edges/clutter.py`) | 4/7 (1.29) | **6/6** | 4/5 | 62 (0.18) | type7 green-light misses FIXED; type4 125748_002/_005 +4 (dense lower half breaks into streaks, the shipped models' type4 failure -- not clutter-shaped); rot +8/-8: 42 / 40 |
+| `f32c_a` | FINAL 1/3: s32 + `--clutter 0.5`, seed 42 | 6/7 (0.14) | 5/6 | 4/5 | 65 (0.04) | type2/3/10 all exact |
+| `f32c_b` | FINAL 2/3: as f32c_a, seed 7 | **7/7** | 5/6 | 5/5 | **67 (0.01)** | one miss: type7 143956_017 (-1) |
+| **`f32c_a` + `f32c_b` averaged** | | 6/7 | 5/6 | 5/5 | **66 (0.03)** | misses type4 130138_002 (-1), type7 143956_017 (-1) |
+| **`f32c_c`** | FINAL 3/3: as f32c_a, seed 3 | **7/7** | **6/6** | **5/5** | **68 (0.00)** | every held-out strip exact |
+| `f32c_a+b+c` averaged | | 7/7 | 5/6 | 5/5 | 67 (0.01) | `f32c_b+c`: 67 (0.01) |
+
+Whole pipeline, `bash tools/candidate_check.sh edges_f32c_ab shipped runs/edges_f32c_a/last.pt runs/edges_f32c_b/last.pt`
+(column model = shipped rep1_s42; vs the shipped four sheet models, `cc_rep1_s42`):
+
+| check | shipped 4 x base16 | f32c_a + f32c_b (2 x base32) |
+|---|---|---|
+| held-out test single / voted | 0.994 / 1.000 | 0.988 / 0.988 (type10 21/23: 140757 col x~985 counted 25 in frames 013+014, unflagged) |
+| unseen type2 exact / voted | 77.9 / 81.7 % | **80.8 / 85.6 %** |
+| type1 142210 (30 pcs) exact | 61.1 % | **83.3 %** (all type1 91.4 %, voted 94.3 % vs 80.0 / 84.3 %) |
+| October pinned type3 exact (sharp) | 29.6 % (60.9 %) | 25.9 % (56.5 %) |
+| stress exposure -2.5 / +2 EV | 0.941 / 0.941 | 0.959 / 0.941 |
+| stress rotate -10/+10/-20/+20 | 0.968 / 0.938 / 0.928 / 0.899 | 0.987 / 0.956 / 0.954 / 0.939 |
+| stress zoom 0.6 / 0.75 | 0.243 / 0.828 | 0.314 / 0.846 |
+
+The type10 miss is the top end sheet under the bright cap: the shipped set skips it and flags the column UNCERTAIN;
+the base-32 pair marks it (25) with confidence, so the uncertainty flag no longer fires. Its top blob is 0.69 of the
+median blob (shipped 0.40), above `END_FLOOR` 0.50. Raising END_FLOOR does NOT pay (f32c_a+b+c, voted):
+0.60/0.65 test 0.988 (no change), type1 voted 94.3 -> 90.0 %, October sharp 71.4 -> 65.7 %; 0.75 test voted 1.000
+but one type3 end sheet lost, type1 voted 81.4 %. Keep 0.50 (`python tools/with_floor.py <value> tools.evaluate ...` runs any tool with another value).
+Three models (a+b+c): test 0.988 / 0.988, unseen type2 85.6 %, type1 voted 94.3 %, October type3 27.8 % (sharp 60.9 %).
+f32c_c ALONE (68/68 strips): test 0.976 / 0.976 (two type3 columns wrong), unseen type2 85.6 %, type1 voted 95.7 %,
+October type3 29.6 % (sharp 60.9 %), stress about the same -- the best strip model is not the best pipeline model;
+average the three. Shipped four on the same strips: 64/68 (type4 4/7, MAE 2.86).
+
+**Edge candidate 2026-11-15: `f32c_a + f32c_b + f32c_c` (runs/_candidates/edges_f32c_abc), NOT installed.**
+vs the shipped four: held-out strips 67 vs 64/68; unseen type2 voted 85.6 vs 81.7 %; type1 voted 94.3 vs 84.3 %
+(30-piece 142210: 83 vs 61 %); exposure/rotation stress better; October type3 equal (sharp 60.9 %); held-out frame
+test 0.988 / 0.988 vs 0.994 / 1.000 (the one type10 column end, 140757 x~985). CPU cost ~150 ms per strip vs ~110 ms
+(three base-32 vs four base-16); f32c_a+b alone is ~100 ms and scores the same except October sharp 56.5 %.
+Inputs/outputs unchanged (n x 3 x h x w -> n x 3 x h x w).
+
+Type7 misses (all 143956): the model counts the green window light at the strip end as a sheet (24 vs 23 labelled).
+The +-8 deg rotation stress (`--rotate`) is NOT valid for type3 (and partly type1/type7): it rotates the strip inside
+its own ~73 px wide canvas, which clips a narrow strip into a thin wedge while the labels still count the sheets in
+the slivers (131412_001_column_1: 9 counted, 21 labelled sheets left, most a few px wide). Its type3 collapse
+(18 -> 0-4 for every model) is the test, not the model; rotate on a padded canvas before trusting it.
+Width (CPU, one 80x2048 strip, busy machine): base 16 28 ms, 24 38 ms, 32 51 ms -- one base-32 model costs less
+than the shipped four averaged base-16 models (~110 ms). Rotation margin (+-8 deg) does not grow with width; type7
+drops to 0/6 at -8 deg for EVERY model (its sheets are steep, so a tilted straightening merges them).
+x3_a's 5 misses: type1 142016_009 (-1), type2 134020_011 (+1), type4 125748_002 (+1), type7 143956_012/_017 (+1, the
+green light). The shipped four-model set counts type4 125748_002 as 59: textured type4 sheets break into pieces along
+their length; the new type4 strips fix that (x3_a 51). `--clutter` targets the green-light miss: training windows
+only ever had black past the strip ends, while real strips run past the stack into lit background.
 
 ## Data
 
@@ -355,6 +433,15 @@ Every candidate is scored with `bash tools/candidate_check.sh <name> runs/column
   `--agent-rep 1` (human frames x4): at x4 the model copies their band-boundary convention and type10 counts +1.
   Held out: type1 session 142016, type4 sessions 125748 + 130138, and for type7 (one session per variant) a frame
   block of each session with a buffer frame on each side (`tools.column_heldout_check` reports type7 SAME-SESSION).
+- **AI-agent EDGE labels, types 1/4/7** (`data/edges/type1|type4|type7/`, 82 strips, 3312 sheets; received 2026-11-15 as
+  "type147_edges (1).zip" -- the newer, complete copy -- original in `../datasets/type147_edges_20261115/`). Made by an
+  automatic chain + Opus fixer + zoom check by a lead agent (4 columns with a human in the loop), on full frames
+  (good_column + one "edge" polygon per sheet); converted to strips with the production straightener
+  (`common.straighten.straighten_frame_pairs`), named `<frame>_column_<col>`. Only status done/gold; the type1 side
+  view 134502 is left out (those columns are cropped). Conventions differ from the human type2/3/10 labels: type1 =
+  bright front stripe (~half pitch, 42-56 % of the strip), type4/7 = groove to groove (70-76 %). Type7 counts are NOT
+  the file name: 143643 = 39 sheets, 143956 = 23 (22 + a separate end sheet). Held out like the column split
+  (type1 142016, type4 125748 + 130138, type7 frame blocks). Score with `tools.edge_heldout_check`.
 - **October test frames** for `tools.oct_field_count --pin`: `data/oct26/pinned_test_frames.json` (58).
 - **Type1 frames** (no labels yet): `../datasets/quality_dataset_20260916/quality_dataset/type1_quality/passed/`.
   Three kinds: side view 134502 (every column cut off: target is NO complete column), 50 pieces
@@ -420,6 +507,35 @@ Every candidate is scored with `bash tools/candidate_check.sh <name> runs/column
   unseen type2 81 vs 83 %). `edges_rfg_a/b` (+ `--far-p 0.3 --exposure 0.3 --groove 1.0`, 8000 steps): fixes
   camera tilt (pitch -10 % 0.876 -> 0.970) and helps distance (0.6x 0.10 -> 0.24) but unseen type2 83 -> 74 %
   and broken masks (groove term). NEXT TO TRY: the rfg recipe WITHOUT `--groove` (or 0.2).
+- (2026-11-15) STRAIGHTENER FIX (`SheetCounter.straighten_columns`): with a finely traced outline (512-px column
+  model) a small notch could pass for the opposite edge, so the column looked ~10 px wide and the inward cut emptied
+  it ("could not straighten": hr512_s42 lost 8 type3 test columns this way). A column whose two edges are closer than
+  half its own width is now retried with simplified outlines (approxPolyDP 3, then 6 px); if none passes the original
+  result stands. Production rep1_s42 and the 256 control score exactly as before (0.994 / 1.000, 0.971 / 0.982).
+- (2026-11-15) DENSE fusion check, `python -m tools.seam_check [--models <dir>]`: every pair of labelled columns that
+  touch on a held-out frame is one trial (501 pairs on 99 frames). rep1_s42 / rep1_s7 merge 17 / 18 pairs (8 / 7 with a
+  complete column), seam_s42 / seam_s7 17 / 18 (9 / 9); share of the labelled gap painted as column 26.3 / 27.1 % vs
+  25.4 / 26.0 %. Merges sit in type7 (5-7 of 72 pairs) and closeup (6-8 of 58). A quarter of every gap is painted
+  column at 256 px input -- the gap is ~1 px there; resolution, not the loss, is the limit.
+- (2026-11-15) Seam-weighted column loss + pasted cropped pieces (`columns.train --seam-w 5 --paste 0.3`, seeds 42/7
+  vs rep1_s42/s7): held-out fusions unchanged (fused-and-complete 6/6 vs 6/5); fewer only on frames it trained on
+  (19 vs 34-36). Costs +3-5 pts false columns and the voted test 1.000 -> 0.994. See the column candidate log.
+  The held-out frames contain only 2 harmful fusions -- label more stacked-piece / strap frames before retrying.
+- (2026-11-15) SMOOTH column outlines (`python tools/with_smooth_columns.py <sigma> <tool> ...`: each column's 256-px
+  mask blurred and upsampled bilinearly instead of the ~7.5 px nearest-neighbour staircase). Looks right (no teeth
+  in the gaps) but does NOT fix overcounts -- they come from how far the outline reaches at a column END, and the
+  rounded end lets in one more partial end sheet: with f32c_a+b+c, sigma 1 / 0 / 2 give test 0.976 / 0.970 / 0.982
+  (jagged 0.988), type10 19-20/23 (jagged 21/23); with the shipped four, sigma 1: test 0.982 / 1.000, unseen type2
+  85.6 % voted (jagged 81.7), type1 voted 77.1 % (jagged 84.3). Keep the staircase for counting.
+- (2026-11-15) Fused columns (`python -m tools.fused_columns`: a predicted mask holding >= 25 % of 2+ labelled
+  columns): 55 of ~2600 predicted columns on all labelled frames, most two CROPPED stacks called cropped (harmless).
+  The harmful kind: a cropped piece directly above/below a complete column (type1 142210_025, type7 143956_003/027/028)
+  or two pieces either side of a strap (type1 142016_019/020), merged and called COMPLETE. The seam is ~1 px at 256.
+  The class head barely sees it: P(cropped) > 0.5 on > 20 % of the mask flags 4/14 fused vs 4 % of good columns.
+- (2026-11-15) Zoomed SECOND PASS of the column model (re-run on a crop around each predicted complete column, 15 %
+  margin) to split fused columns: on all 465 labelled frames it splits 89 / 1119 GOOD complete columns (8 %, mostly
+  dense type3 131612) and separates only 6 / 14 fused ones -- the model never saw zoomed-in crops. Inference-only
+  zoom is not free for the current column model (it was for the July model trained with ROI zoom).
 - (2026-11-15) Motion-blur augmentation for the sheet models (`edges.train --motion 0.4`): camera shake 9 px 0.18 -> 0.45,
   15-25 px still ~0 (the grooves are gone from the image), unseen type2 89 -> 84 %. Dropped; the defence is the
   uncertainty flag / retake. `tools.stress` has motion rows.

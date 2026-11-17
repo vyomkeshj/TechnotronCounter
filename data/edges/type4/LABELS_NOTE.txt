@@ -1,0 +1,1 @@
+Thinned 2026-11-15: type4/type7 sheet labels thinned vertically to ~50 % of the strip (band convention of the human type3/10 labels); groove-to-groove originals in ../datasets/type147_edges_20261115/ made the model merge sheets (type4 2/7).

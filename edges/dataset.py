@@ -35,6 +35,7 @@ import paths
 from common import labelme, splits
 from common.flows import flow_targets
 from common.imageio import degrade, photometric, to_tensor, exposure, motion_blur
+from edges.clutter import fill as clutter_fill
 
 cv2.setNumThreads(0)
 SIZE = 256
@@ -173,7 +174,8 @@ class EdgeDataset(Dataset):
     def __init__(self, items: list[dict], repeats: int = 64, width_modes: dict = WIDTH_MODES,
                  lighting: str = "", texture: float = 0.0, texture_max: float = 0.40,
                  texture_skip: tuple = (), rot_max: float = 6.0, exposure_p: float = 0.0,
-                 far_p: float = 0.0, far_lo: float = 0.5, motion_p: float = 0.0):
+                 far_p: float = 0.0, far_lo: float = 0.5, motion_p: float = 0.0,
+                 clutter_p: float = 0.0, clutter_bank: list | None = None):
         self.items = items * repeats
         self.modes, self.weights = list(width_modes), list(width_modes.values())
         self.lighting = lighting
@@ -182,6 +184,7 @@ class EdgeDataset(Dataset):
         self.exposure_p = exposure_p              # camera exposure set wrong (common.imageio.exposure)
         self.far_p, self.far_lo = far_p, far_lo   # camera farther away: whole strip shrunk by far_lo..0.9 (area)
         self.motion_p = motion_p                  # camera shake (common.imageio.motion_blur)
+        self.clutter_p, self.clutter_bank = clutter_p, clutter_bank   # background past the strip ends (edges.clutter)
         self._cache: dict = {}
 
     def __len__(self):
@@ -210,6 +213,9 @@ class EdgeDataset(Dataset):
             y0 = random.randint(0, max(0, h - SIZE)); fh = min(h - y0, SIZE); yd = 0
         wi[yd:yd + fh, xd:xd + cw] = img[y0:y0 + fh, xs:xs + cw]
         wl[yd:yd + fh, xd:xd + cw] = lab[y0:y0 + fh, xs:xs + cw]
+        if self.clutter_p and self.clutter_bank and random.random() < self.clutter_p:
+            empty = np.ones(SIZE, bool); empty[yd:yd + fh] = False
+            wi = clutter_fill(wi, empty, xd, xd + cw, self.clutter_bank)
         if random.random() < 0.5:
             wi, wl = wi[:, ::-1], wl[:, ::-1]
         wi, wl = np.ascontiguousarray(wi), np.ascontiguousarray(wl)
